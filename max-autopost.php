@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: MAX Autopost
- * Plugin URI:  https://github.com/a-krivoshein/max-autopost
+ * Plugin URI:  https://github.com/A-Krivoshen/max-autopost
  * Description: Production-ready автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (image + text + inline button), upload image с полным payload, очередь через WP-Cron, ручная отправка, тест и логи.
  * Version:     1.0.0
  * Author:      Dr.Slon
