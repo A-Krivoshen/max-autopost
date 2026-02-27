@@ -1,83 +1,76 @@
 <?php
 /**
- * Plugin Name: MAX Autopost
- * Plugin URI:  https://github.com/A-Krivoshen/max-autopost
- * Description: Production-ready автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (image + text + inline button), upload image с полным payload, очередь через WP-Cron, ручная отправка, тест и логи.
- * Version:     1.0.0
- * Author:      Dr.Slon
- * License:     MIT
- * License URI: https://opensource.org/licenses/MIT
+ * Plugin Name: MAX Autopost (Free)
+ * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
+ * Version: 1.2.1
+ * Author: Dr.Slon
  * Requires PHP: 8.0
- * Requires at least: 6.0
  */
 
-if ( ! defined('ABSPATH') ) exit;
+if (!defined('ABSPATH')) exit;
 
 final class KRV_MAX_Autopost {
 
-    public const OPT_KEY      = 'krv_max_autopost';
-    public const LOG_OPT_KEY  = 'krv_max_autopost_log';
-    public const META_STATUS  = '_krv_max_status';
-    public const META_ERROR   = '_krv_max_error';
-    public const CRON_HOOK    = 'krv_max_autopost_cron';
-    public const CRON_SCHED   = 'krv_max_autopost_minute';
+    private const OPT     = 'krv_max_autopost';
+    private const LOG_OPT = 'krv_max_autopost_logs';
 
-    private static ?self $instance = null;
+    private const META_STATUS   = '_krv_max_status';   // queued|sent|error
+    private const META_ERROR    = '_krv_max_error';
+    private const META_ATTEMPTS = '_krv_max_attempts';
+    private const META_NEXTTRY  = '_krv_max_next_try';
+    private const META_SENTHASH = '_krv_max_sent_hash';
 
-    public static function instance(): self {
-        if ( self::$instance === null ) self::$instance = new self();
-        return self::$instance;
-    }
+    private const META_DISABLE  = '_krv_max_disable';
+    private const META_OVERRIDE = '_krv_max_override';
 
-    private function __construct() {}
+    private const CRON_HOOK     = 'krv_max_autopost_cron';
+    private const CRON_SCHEDULE = 'krv_max_minute';
+    private const CRON_LOCK_KEY = 'krv_max_autopost_lock';
 
-    /* ===================== Bootstrap ===================== */
+    private const MAX_TEXT    = 3900;
+    private const BATCH_LIMIT = 5;
+    private const LOG_LIMIT   = 50;
 
-    public function hooks(): void {
+    // Retry backoff (attempt 1..N). After last element -> error.
+    private static array $backoff = [60, 180, 600, 1800, 3600];
 
-        add_filter('cron_schedules', [$this, 'cron_schedules']);
-        add_action('admin_menu',      [$this, 'admin_menu']);
-        add_action('admin_init',      [$this, 'register_settings']);
+    public static function init(): void {
+        add_filter('cron_schedules', [__CLASS__, 'cron_schedules']);
 
-        add_action('transition_post_status', [$this, 'queue_on_publish'], 20, 3);
-        add_action(self::CRON_HOOK,           [$this, 'process_queue']);
+        add_action('admin_menu', [__CLASS__, 'admin_menu']);
+        add_action('admin_init', [__CLASS__, 'register_settings']);
+        add_action('admin_notices', [__CLASS__, 'admin_notices']);
 
-        add_action('admin_post_krv_max_test',     [$this, 'handle_test_send']);
-        add_action('admin_post_krv_max_send_now', [$this, 'handle_send_now']);
+        add_action('transition_post_status', [__CLASS__, 'queue_on_publish'], 10, 3);
+        add_action(self::CRON_HOOK, [__CLASS__, 'process_queue']);
 
-        add_filter('post_row_actions',          [$this, 'row_action'], 10, 2);
-        add_filter('bulk_actions-edit-post',    [$this, 'bulk_action']);
-        add_filter('handle_bulk_actions-edit-post', [$this, 'handle_bulk'], 10, 3);
+        add_action('add_meta_boxes', [__CLASS__, 'add_metabox']);
+        add_action('save_post', [__CLASS__, 'save_metabox'], 10, 2);
+
+        add_action('admin_post_krv_max_send_test', [__CLASS__, 'handle_send_test']);
+        add_action('admin_post_krv_max_run_queue', [__CLASS__, 'handle_run_queue']);
+        add_action('admin_post_krv_max_requeue_errors', [__CLASS__, 'handle_requeue_errors']);
+        add_action('admin_post_krv_max_send_now', [__CLASS__, 'handle_send_now']);
+
+        add_filter('post_row_actions', [__CLASS__, 'row_action'], 10, 2);
+        add_filter('bulk_actions-edit-post', [__CLASS__, 'bulk_action']);
+        add_filter('handle_bulk_actions-edit-post', [__CLASS__, 'handle_bulk'], 10, 3);
     }
 
     public static function activate(): void {
-        $self = self::instance();
-        $self->maybe_schedule_cron();
+        if (!wp_next_scheduled(self::CRON_HOOK)) {
+            wp_schedule_event(time() + 60, self::CRON_SCHEDULE, self::CRON_HOOK);
+        }
     }
 
     public static function deactivate(): void {
-        wp_clear_scheduled_hook(self::CRON_HOOK);
+        $ts = wp_next_scheduled(self::CRON_HOOK);
+        if ($ts) wp_unschedule_event($ts, self::CRON_HOOK);
     }
 
-    public function cron_schedules(array $schedules): array {
-        if ( ! isset($schedules[self::CRON_SCHED]) ) {
-            $schedules[self::CRON_SCHED] = [
-                'interval' => 60,
-                'display'  => 'Every Minute (MAX Autopost)'
-            ];
-        }
-        return $schedules;
-    }
+    /* ================= SETTINGS ================= */
 
-    private function maybe_schedule_cron(): void {
-        if ( ! wp_next_scheduled(self::CRON_HOOK) ) {
-            wp_schedule_event(time() + 60, self::CRON_SCHED, self::CRON_HOOK);
-        }
-    }
-
-    /* ===================== Settings ===================== */
-
-    public function defaults(): array {
+    private static function defaults(): array {
         return [
             'token'         => '',
             'chat_id'       => '',
@@ -85,773 +78,715 @@ final class KRV_MAX_Autopost {
             'add_button'    => 1,
             'button_text'   => 'Читать',
             'notify'        => 1,
+            'debug'         => 0,
         ];
     }
 
-    public function get_settings(): array {
-        return wp_parse_args(get_option(self::OPT_KEY, []), $this->defaults());
+    private static function get_settings(): array {
+        $raw = get_option(self::OPT, []);
+        $raw = is_array($raw) ? $raw : [];
+        return wp_parse_args($raw, self::defaults());
     }
 
-    public function register_settings(): void {
-        register_setting(
-            self::OPT_KEY,
-            self::OPT_KEY,
-            [
-                'type'              => 'array',
-                'sanitize_callback' => [$this, 'sanitize_settings'],
-                'default'           => $this->defaults(),
-            ]
-        );
+    public static function register_settings(): void {
+        register_setting(self::OPT, self::OPT, [
+            'type'              => 'array',
+            'sanitize_callback' => [__CLASS__, 'sanitize_settings'],
+            'default'           => self::defaults(),
+        ]);
     }
 
-    public function sanitize_settings($value): array {
-        $d = $this->defaults();
-        $v = is_array($value) ? $value : [];
+    public static function sanitize_settings($in): array {
+        $d = self::defaults();
+        $in = is_array($in) ? $in : [];
 
         $out = [];
-        $out['token'] = isset($v['token']) ? trim((string)$v['token']) : $d['token'];
-        $out['chat_id'] = isset($v['chat_id']) ? trim((string)$v['chat_id']) : $d['chat_id'];
+        $out['token']   = isset($in['token']) ? trim((string)$in['token']) : $d['token'];
+        $out['chat_id'] = isset($in['chat_id']) ? trim((string)$in['chat_id']) : $d['chat_id'];
 
-        $out['include_image'] = ! empty($v['include_image']) ? 1 : 0;
-        $out['add_button']    = ! empty($v['add_button']) ? 1 : 0;
+        $out['include_image'] = !empty($in['include_image']) ? 1 : 0;
+        $out['add_button']    = !empty($in['add_button']) ? 1 : 0;
 
-        $btn = isset($v['button_text']) ? trim((string)$v['button_text']) : $d['button_text'];
-        $btn = $btn !== '' ? $btn : $d['button_text'];
-        $out['button_text']   = mb_substr($btn, 0, 40);
+        $out['button_text'] = isset($in['button_text']) ? sanitize_text_field((string)$in['button_text']) : $d['button_text'];
+        if ($out['button_text'] === '') $out['button_text'] = $d['button_text'];
 
-        $out['notify'] = ! empty($v['notify']) ? 1 : 0;
+        $out['notify'] = !empty($in['notify']) ? 1 : 0;
+        $out['debug']  = !empty($in['debug']) ? 1 : 0;
 
         return $out;
     }
 
-    /* ===================== Admin UI ===================== */
-
-    public function admin_menu(): void {
-        add_menu_page(
-            'MAX Autopost',
-            'MAX Autopost',
-            'manage_options',
-            'krv-max-autopost',
-            [$this, 'render_page'],
-            'dashicons-megaphone',
-            65
-        );
+    private static function token(array $s): string {
+        if (defined('KRV_MAX_TOKEN') && is_string(KRV_MAX_TOKEN) && trim(KRV_MAX_TOKEN) !== '') {
+            return trim(KRV_MAX_TOKEN);
+        }
+        return (string)$s['token'];
     }
 
-    public function render_page(): void {
-        if ( ! current_user_can('manage_options') ) return;
+    /* ================= ADMIN UI ================= */
+
+    public static function admin_menu(): void {
+        add_menu_page('MAX Autopost','MAX Autopost','manage_options','krv-max-autopost',[__CLASS__,'render_page'],'dashicons-megaphone',59);
+    }
+
+    public static function admin_notices(): void {
+        if (!current_user_can('manage_options')) return;
+
+        $msg = get_transient('krv_max_notice');
+        if (is_array($msg) && !empty($msg['text'])) {
+            $type = in_array(($msg['type'] ?? ''), ['success','error','warning','info'], true) ? $msg['type'] : 'info';
+            echo '<div class="notice notice-' . esc_attr($type) . ' is-dismissible"><p>' . esc_html($msg['text']) . '</p></div>';
+            delete_transient('krv_max_notice');
+        }
+    }
+
+    private static function notice(string $type, string $text): void {
+        set_transient('krv_max_notice', ['type'=>$type,'text'=>$text], 60);
+    }
+
+    public static function render_page(): void {
+        if (!current_user_can('manage_options')) return;
 
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
-        $s = $this->get_settings();
+        $s = self::get_settings();
 
-        $notice = '';
-        if ( isset($_GET['krv_notice']) ) {
-            $notice = sanitize_key((string)$_GET['krv_notice']);
-        }
-
-        echo '<div class="wrap">';
-        echo '<h1>MAX Autopost</h1>';
-
-        if ( $notice === 'test_ok' ) {
-            echo '<div class="notice notice-success"><p>Тестовое сообщение отправлено.</p></div>';
-        } elseif ( $notice === 'test_fail' ) {
-            echo '<div class="notice notice-error"><p>Тестовая отправка завершилась ошибкой. Смотри вкладку «Логи».</p></div>';
-        } elseif ( $notice === 'queued' ) {
-            echo '<div class="notice notice-success"><p>Запись(и) поставлены в очередь.</p></div>';
-        }
-
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.2.1</h1>';
         echo '<h2 class="nav-tab-wrapper">';
-        echo '<a class="nav-tab ' . ($tab==='settings' ? 'nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=krv-max-autopost&tab=settings')) . '">Настройки</a>';
-        echo '<a class="nav-tab ' . ($tab==='queue' ? 'nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=krv-max-autopost&tab=queue')) . '">Очередь</a>';
-        echo '<a class="nav-tab ' . ($tab==='logs' ? 'nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=krv-max-autopost&tab=logs')) . '">Логи</a>';
+        echo self::tab_link('settings','Настройки',$tab);
+        echo self::tab_link('queue','Очередь',$tab);
+        echo self::tab_link('logs','Логи',$tab);
         echo '</h2>';
 
-        if ( $tab === 'settings' ) {
-            $this->render_tab_settings($s);
-        } elseif ( $tab === 'queue' ) {
-            $this->render_tab_queue();
-        } else {
-            $this->render_tab_logs();
-        }
+        if ($tab === 'settings') self::tab_settings($s);
+        elseif ($tab === 'queue') self::tab_queue();
+        else self::tab_logs();
 
         echo '</div>';
     }
 
-    private function render_tab_settings(array $s): void {
+    private static function tab_link(string $tab, string $label, string $active): string {
+        $cls = ($tab === $active) ? 'nav-tab nav-tab-active' : 'nav-tab';
+        $url = admin_url('admin.php?page=krv-max-autopost&tab=' . $tab);
+        return '<a class="' . esc_attr($cls) . '" href="' . esc_url($url) . '">' . esc_html($label) . '</a>';
+    }
 
-        // curl check (required for upload)
-        if ( ! function_exists('curl_init') ) {
-            echo '<div class="notice notice-warning"><p><strong>Внимание:</strong> на сервере не найдено расширение cURL. Загрузка изображений в MAX работать не будет.</p></div>';
-        }
-
+    private static function tab_settings(array $s): void {
         echo '<form method="post" action="options.php">';
-        settings_fields(self::OPT_KEY);
+        settings_fields(self::OPT);
 
-        echo '<table class="form-table">';
-        echo '<tr><th scope="row">Token</th><td><input type="text" name="' . esc_attr(self::OPT_KEY) . '[token]" value="' . esc_attr($s['token']) . '" class="regular-text" autocomplete="off"></td></tr>';
-        echo '<tr><th scope="row">Chat ID</th><td><input type="text" name="' . esc_attr(self::OPT_KEY) . '[chat_id]" value="' . esc_attr($s['chat_id']) . '" class="regular-text" autocomplete="off"></td></tr>';
+        echo '<table class="form-table"><tbody>';
+        echo '<tr><th>Token</th><td><input type="password" class="regular-text" name="'.esc_attr(self::OPT).'[token]" value="'.esc_attr($s['token']).'">';
+        echo '<p class="description">Можно вынести токен в wp-config.php: <code>define(\'KRV_MAX_TOKEN\', \'...\');</code></p></td></tr>';
 
-        echo '<tr><th scope="row">Включить изображение</th><td><label><input type="checkbox" name="' . esc_attr(self::OPT_KEY) . '[include_image]" value="1" ' . checked(1, (int)$s['include_image'], false) . '> Да</label></td></tr>';
+        echo '<tr><th>Chat ID</th><td><input type="text" class="regular-text" name="'.esc_attr(self::OPT).'[chat_id]" value="'.esc_attr($s['chat_id']).'"></td></tr>';
 
-        echo '<tr><th scope="row">Включить кнопку</th><td>';
-        echo '<label><input type="checkbox" name="' . esc_attr(self::OPT_KEY) . '[add_button]" value="1" ' . checked(1, (int)$s['add_button'], false) . '> Да</label> ';
-        echo '<input type="text" name="' . esc_attr(self::OPT_KEY) . '[button_text]" value="' . esc_attr($s['button_text']) . '" class="regular-text" style="max-width:220px" />';
+        echo '<tr><th>Картинка</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[include_image]" value="1" '.checked((int)$s['include_image'],1,false).'> Включить изображение</label></td></tr>';
+
+        echo '<tr><th>Кнопка</th><td>';
+        echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_button]" value="1" '.checked((int)$s['add_button'],1,false).'> Включить кнопку “Читать”</label><br>';
+        echo '<input type="text" name="'.esc_attr(self::OPT).'[button_text]" value="'.esc_attr($s['button_text']).'" style="width:220px;">';
+        echo '<p class="description">inline_keyboard идёт <strong>вторым attachment</strong> (после image, если он есть).</p>';
         echo '</td></tr>';
 
-        echo '<tr><th scope="row">Notify</th><td><label><input type="checkbox" name="' . esc_attr(self::OPT_KEY) . '[notify]" value="1" ' . checked(1, (int)$s['notify'], false) . '> true</label></td></tr>';
-        echo '</table>';
+        echo '<tr><th>Notify</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[notify]" value="1" '.checked((int)$s['notify'],1,false).'> notify=true</label></td></tr>';
+        echo '<tr><th>Debug</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[debug]" value="1" '.checked((int)$s['debug'],1,false).'> расширенные логи</label></td></tr>';
+        echo '</tbody></table>';
 
         submit_button('Сохранить');
         echo '</form>';
 
-        echo '<hr><h2>Тестовая отправка</h2>';
-        echo '<p>Отправляет тестовое сообщение в MAX в указанный <code>chat_id</code> без очереди. Формат учитывает настройки изображения/кнопки.</p>';
-
-        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
-        wp_nonce_field('krv_max_test_nonce');
-        echo '<input type="hidden" name="action" value="krv_max_test" />';
-        submit_button('Отправить тест', 'secondary');
+        echo '<hr><h3>Тест</h3>';
+        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+        wp_nonce_field('krv_max_send_test');
+        echo '<input type="hidden" name="action" value="krv_max_send_test">';
+        submit_button('Отправить тест','secondary','submit',false);
         echo '</form>';
     }
 
-    private function render_tab_queue(): void {
+    private static function tab_queue(): void {
+        echo '<div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0;">';
+        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+        wp_nonce_field('krv_max_run_queue');
+        echo '<input type="hidden" name="action" value="krv_max_run_queue">';
+        submit_button('Запустить очередь сейчас','secondary','submit',false);
+        echo '</form>';
 
-        $status = isset($_GET['status']) ? sanitize_key((string)$_GET['status']) : '';
-        $allowed = ['queued','sent','error'];
-        $status = in_array($status, $allowed, true) ? $status : '';
-
-        echo '<p>';
-        echo 'Фильтр: ';
-        echo '<a href="' . esc_url(admin_url('admin.php?page=krv-max-autopost&tab=queue')) . '">Все</a> | ';
-        echo '<a href="' . esc_url(admin_url('admin.php?page=krv-max-autopost&tab=queue&status=queued')) . '">queued</a> | ';
-        echo '<a href="' . esc_url(admin_url('admin.php?page=krv-max-autopost&tab=queue&status=sent')) . '">sent</a> | ';
-        echo '<a href="' . esc_url(admin_url('admin.php?page=krv-max-autopost&tab=queue&status=error')) . '">error</a>';
-        echo '</p>';
-
-        $meta_query = [];
-        if ( $status ) {
-            $meta_query[] = [
-                'key'   => self::META_STATUS,
-                'value' => $status,
-            ];
-        } else {
-            $meta_query[] = [
-                'key'     => self::META_STATUS,
-                'compare' => 'EXISTS',
-            ];
-        }
+        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+        wp_nonce_field('krv_max_requeue_errors');
+        echo '<input type="hidden" name="action" value="krv_max_requeue_errors">';
+        submit_button('Requeue errors','secondary','submit',false);
+        echo '</form>';
+        echo '</div>';
 
         $q = new WP_Query([
-            'post_type'      => 'post',
-            'post_status'    => 'any',
-            'posts_per_page' => 50,
-            'orderby'        => 'date',
-            'order'          => 'DESC',
-            'meta_query'     => $meta_query,
-            'no_found_rows'  => true,
+            'post_type'=>'post','post_status'=>'any','posts_per_page'=>50,
+            'meta_key'=>self::META_STATUS,'orderby'=>'date','order'=>'DESC',
         ]);
 
-        echo '<table class="widefat striped">';
-        echo '<thead><tr>';
-        echo '<th style="width:70px">ID</th><th>Запись</th><th style="width:100px">Статус</th><th>Ошибка</th><th style="width:160px">Дата</th><th style="width:140px">Действие</th>';
-        echo '</tr></thead><tbody>';
-
-        if ( $q->have_posts() ) {
-            foreach ( $q->posts as $p ) {
-                $st = (string) get_post_meta($p->ID, self::META_STATUS, true);
-                $err = (string) get_post_meta($p->ID, self::META_ERROR, true);
-                $send_url = wp_nonce_url(
-                    admin_url('admin-post.php?action=krv_max_send_now&post_id=' . $p->ID),
-                    'krv_max_send_' . $p->ID
-                );
+        echo '<table class="widefat striped"><thead><tr><th>Пост</th><th>Статус</th><th>Попытки</th><th>Next try</th><th>Ошибка</th></tr></thead><tbody>';
+        if ($q->have_posts()) {
+            while ($q->have_posts()) {
+                $q->the_post();
+                $id = get_the_ID();
+                $st  = (string)get_post_meta($id,self::META_STATUS,true);
+                $att = (int)get_post_meta($id,self::META_ATTEMPTS,true);
+                $nt  = (int)get_post_meta($id,self::META_NEXTTRY,true);
+                $err = (string)get_post_meta($id,self::META_ERROR,true);
 
                 echo '<tr>';
-                echo '<td>' . esc_html((string)$p->ID) . '</td>';
-                echo '<td><a href="' . esc_url(get_edit_post_link($p->ID)) . '">' . esc_html(get_the_title($p->ID)) . '</a></td>';
-                echo '<td>' . esc_html($st ?: '-') . '</td>';
-                echo '<td style="max-width:520px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="' . esc_attr($err) . '">' . esc_html($err) . '</td>';
-                echo '<td>' . esc_html(get_the_date('Y-m-d H:i', $p->ID)) . '</td>';
-                echo '<td><a class="button button-small" href="' . esc_url($send_url) . '">В очередь</a></td>';
+                echo '<td><a href="'.esc_url(get_edit_post_link($id)).'">'.esc_html(get_the_title()).'</a></td>';
+                echo '<td>'.esc_html($st ?: '-').'</td>';
+                echo '<td>'.esc_html((string)$att).'</td>';
+                echo '<td>'.esc_html($nt ? wp_date('Y-m-d H:i:s',$nt) : '-').'</td>';
+                echo '<td title="'.esc_attr($err).'" style="max-width:520px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'.esc_html($err).'</td>';
+                echo '</tr>';
+            }
+            wp_reset_postdata();
+        } else {
+            echo '<tr><td colspan="5">Очередь пуста.</td></tr>';
+        }
+        echo '</tbody></table>';
+    }
+
+    private static function tab_logs(): void {
+        $logs = get_option(self::LOG_OPT, []);
+        $logs = is_array($logs) ? $logs : [];
+
+        echo '<table class="widefat striped"><thead><tr><th>Time</th><th>Post</th><th>Step</th><th>HTTP</th><th>Message</th></tr></thead><tbody>';
+        if (!empty($logs)) {
+            foreach ($logs as $row) {
+                $t = (int)($row['time'] ?? 0);
+                $pid = (int)($row['post_id'] ?? 0);
+                $step = (string)($row['step'] ?? '');
+                $http = (string)($row['http'] ?? '');
+                $msg = (string)($row['msg'] ?? '');
+
+                echo '<tr>';
+                echo '<td>'.esc_html($t ? wp_date('Y-m-d H:i:s',$t) : '-').'</td>';
+                echo '<td>'.esc_html((string)$pid).'</td>';
+                echo '<td>'.esc_html($step).'</td>';
+                echo '<td>'.esc_html($http).'</td>';
+                echo '<td title="'.esc_attr($msg).'" style="max-width:760px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'.esc_html($msg).'</td>';
                 echo '</tr>';
             }
         } else {
-            echo '<tr><td colspan="6">Нет записей в очереди/истории.</td></tr>';
+            echo '<tr><td colspan="5">Логи пустые.</td></tr>';
         }
-
-        echo '</tbody></table>';
-        wp_reset_postdata();
-
-        echo '<p style="margin-top:12px;color:#666">Cron: обрабатывается раз в минуту, за проход — максимум 5 записей.</p>';
-    }
-
-    private function render_tab_logs(): void {
-        $log = get_option(self::LOG_OPT_KEY, []);
-        if ( ! is_array($log) ) $log = [];
-
-        echo '<p>Последние 50 ошибок (если MAX вернул HTTP != 2xx, невалидный JSON, cURL/сеть и т.п.).</p>';
-
-        if ( empty($log) ) {
-            echo '<p><em>Пока пусто. И это хороший знак 🙂</em></p>';
-            return;
-        }
-
-        echo '<table class="widefat striped">';
-        echo '<thead><tr><th style="width:170px">Время</th><th style="width:80px">Post ID</th><th>Ошибка</th></tr></thead><tbody>';
-
-        foreach ( $log as $row ) {
-            $ts  = isset($row['time']) ? (string)$row['time'] : '';
-            $pid = isset($row['post_id']) ? (int)$row['post_id'] : 0;
-            $msg = isset($row['message']) ? (string)$row['message'] : '';
-
-            $link = $pid ? '<a href="' . esc_url(get_edit_post_link($pid)) . '">' . esc_html((string)$pid) . '</a>' : '—';
-
-            echo '<tr>';
-            echo '<td>' . esc_html($ts) . '</td>';
-            echo '<td>' . $link . '</td>';
-            echo '<td style="white-space:pre-wrap">' . esc_html($msg) . '</td>';
-            echo '</tr>';
-        }
-
         echo '</tbody></table>';
     }
 
-    /* ===================== Queue ===================== */
+    /* ================= METABOX ================= */
 
-    public function queue_on_publish(string $new_status, string $old_status, WP_Post $post): void {
-        if ( $post->post_type !== 'post' ) return;
-        if ( wp_is_post_revision($post->ID) || wp_is_post_autosave($post->ID) ) return;
-
-        // Only on first transition to publish
-        if ( $old_status !== 'publish' && $new_status === 'publish' ) {
-            update_post_meta($post->ID, self::META_STATUS, 'queued');
-            delete_post_meta($post->ID, self::META_ERROR);
-        }
+    public static function add_metabox(): void {
+        add_meta_box('krv_max_box','MAX Autopost',[__CLASS__,'render_metabox'],'post','side');
     }
 
-    public function process_queue(): void {
+    public static function render_metabox(WP_Post $post): void {
+        wp_nonce_field('krv_max_metabox','krv_max_metabox_nonce');
 
-        $this->maybe_schedule_cron();
+        $disable = (int)get_post_meta($post->ID,self::META_DISABLE,true);
+        $override = (string)get_post_meta($post->ID,self::META_OVERRIDE,true);
 
-        $q = new WP_Query([
-            'post_type'      => 'post',
-            'post_status'    => 'publish',
-            'posts_per_page' => 5,
-            'orderby'        => 'date',
-            'order'          => 'ASC',
-            'meta_query'     => [
-                [
-                    'key'   => self::META_STATUS,
-                    'value' => 'queued',
-                ]
-            ],
-            'no_found_rows'  => true,
-        ]);
-
-        if ( ! $q->have_posts() ) return;
-
-        foreach ( $q->posts as $p ) {
-
-            // Guard: prevent double processing by parallel cron (best-effort)
-            update_post_meta($p->ID, self::META_STATUS, 'processing');
-
-            $res = $this->send_post($p->ID);
-
-            if ( $res === true ) {
-                update_post_meta($p->ID, self::META_STATUS, 'sent');
-                delete_post_meta($p->ID, self::META_ERROR);
-            } else {
-                update_post_meta($p->ID, self::META_STATUS, 'error');
-                update_post_meta($p->ID, self::META_ERROR, (string)$res);
-                $this->log_error($p->ID, (string)$res);
-            }
-        }
-
-        wp_reset_postdata();
-    }
-
-    /* ===================== Manual send (row/bulk) ===================== */
-
-    public function row_action(array $actions, WP_Post $post): array {
-        if ( $post->post_type !== 'post' ) return $actions;
-        if ( ! current_user_can('edit_post', $post->ID) ) return $actions;
+        echo '<p><label><input type="checkbox" name="krv_max_disable" value="1" '.checked($disable,1,false).'> Не отправлять в MAX</label></p>';
+        echo '<p><strong>Override текст</strong>:</p>';
+        echo '<textarea name="krv_max_override" class="widefat" style="min-height:80px;">'.esc_textarea($override).'</textarea>';
 
         $url = wp_nonce_url(
-            admin_url('admin-post.php?action=krv_max_send_now&post_id=' . $post->ID),
-            'krv_max_send_' . $post->ID
+            admin_url('admin-post.php?action=krv_max_send_now&post_id='.(int)$post->ID),
+            'krv_max_send_now_'.(int)$post->ID
         );
-
-        $actions['krv_max_send'] = '<a href="' . esc_url($url) . '">Отправить в MAX</a>';
-        return $actions;
+        echo '<p style="margin-top:10px;"><a class="button button-secondary" href="'.esc_url($url).'">Отправить сейчас</a></p>';
     }
 
-    public function handle_send_now(): void {
-        $id = isset($_GET['post_id']) ? (int) $_GET['post_id'] : 0;
-        if ( ! $id || ! current_user_can('edit_post', $id) ) {
-            wp_safe_redirect(wp_get_referer() ?: admin_url('edit.php'));
-            exit;
+    public static function save_metabox(int $post_id, WP_Post $post): void {
+        if ($post->post_type !== 'post') return;
+        if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
+
+        if (!isset($_POST['krv_max_metabox_nonce']) || !wp_verify_nonce((string)$_POST['krv_max_metabox_nonce'],'krv_max_metabox')) return;
+        if (!current_user_can('edit_post',$post_id)) return;
+
+        $disable = !empty($_POST['krv_max_disable']) ? 1 : 0;
+        if ($disable) update_post_meta($post_id,self::META_DISABLE,1);
+        else delete_post_meta($post_id,self::META_DISABLE);
+
+        if (isset($_POST['krv_max_override'])) {
+            $txt = sanitize_textarea_field((string)$_POST['krv_max_override']);
+            if ($txt !== '') update_post_meta($post_id,self::META_OVERRIDE,$txt);
+            else delete_post_meta($post_id,self::META_OVERRIDE);
         }
-
-        check_admin_referer('krv_max_send_' . $id);
-
-        update_post_meta($id, self::META_STATUS, 'queued');
-        delete_post_meta($id, self::META_ERROR);
-
-        $ref = wp_get_referer() ?: admin_url('edit.php');
-        $ref = add_query_arg('krv_notice', 'queued', $ref);
-        wp_safe_redirect($ref);
-        exit;
     }
 
-    public function bulk_action(array $actions): array {
-        $actions['krv_max_bulk'] = 'Отправить в MAX';
-        return $actions;
+    /* ================= PUBLISH → QUEUE ================= */
+
+    public static function queue_on_publish(string $new_status, string $old_status, WP_Post $post): void {
+        if ($post->post_type !== 'post') return;
+        if ($new_status !== 'publish') return;
+        if ($old_status === 'publish') return;
+
+        $post_id = (int)$post->ID;
+        if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return;
+
+        self::queue_post($post_id,'Auto queue on publish');
+        self::spawn_cron();
     }
 
-    public function handle_bulk(string $redirect, string $doaction, array $post_ids): string {
-        if ( $doaction !== 'krv_max_bulk' ) return $redirect;
+    private static function queue_post(int $post_id, string $why=''): void {
+        update_post_meta($post_id,self::META_STATUS,'queued');
+        delete_post_meta($post_id,self::META_ERROR);
+        update_post_meta($post_id,self::META_ATTEMPTS,0);
+        update_post_meta($post_id,self::META_NEXTTRY,time());
+        self::log('queue',0,$post_id,$why ?: 'queued');
+    }
 
-        $queued = 0;
-        foreach ( $post_ids as $id ) {
-            $id = (int) $id;
-            if ( $id && current_user_can('edit_post', $id) ) {
-                update_post_meta($id, self::META_STATUS, 'queued');
-                delete_post_meta($id, self::META_ERROR);
-                $queued++;
+    private static function spawn_cron(): void {
+        $url = site_url('wp-cron.php?doing_wp_cron=' . urlencode((string)microtime(true)));
+        wp_remote_post($url, ['timeout'=>0.01,'blocking'=>false]);
+    }
+
+    /* ================= CRON ================= */
+
+    public static function cron_schedules(array $schedules): array {
+        if (!isset($schedules[self::CRON_SCHEDULE])) {
+            $schedules[self::CRON_SCHEDULE] = ['interval'=>60,'display'=>'Every Minute (MAX Autopost)'];
+        }
+        return $schedules;
+    }
+
+    public static function process_queue(): void {
+        if (get_transient(self::CRON_LOCK_KEY)) return;
+        set_transient(self::CRON_LOCK_KEY, 1, 55);
+
+        $now = time();
+
+        $q = new WP_Query([
+            'post_type'=>'post','post_status'=>'publish','posts_per_page'=>self::BATCH_LIMIT,
+            'orderby'=>'meta_value_num','meta_key'=>self::META_NEXTTRY,'order'=>'ASC',
+            'meta_query'=>[
+                ['key'=>self::META_STATUS,'value'=>'queued'],
+                [
+                    'relation'=>'OR',
+                    ['key'=>self::META_NEXTTRY,'compare'=>'NOT EXISTS'],
+                    ['key'=>self::META_NEXTTRY,'value'=>$now,'type'=>'NUMERIC','compare'=>'<='],
+                ],
+            ],
+        ]);
+
+        foreach ($q->posts as $p) {
+            $post_id = (int)$p->ID;
+            $res = self::send($post_id);
+
+            if ($res === true) {
+                update_post_meta($post_id,self::META_STATUS,'sent');
+                delete_post_meta($post_id,self::META_ERROR);
+                delete_post_meta($post_id,self::META_ATTEMPTS);
+                delete_post_meta($post_id,self::META_NEXTTRY);
+                continue;
+            }
+
+            $attempts = (int)get_post_meta($post_id,self::META_ATTEMPTS,true);
+            $attempts++;
+            update_post_meta($post_id,self::META_ATTEMPTS,$attempts);
+            update_post_meta($post_id,self::META_ERROR,(string)$res);
+
+            $delay = self::retry_delay($attempts);
+            if ($delay === null) {
+                update_post_meta($post_id,self::META_STATUS,'error');
+                update_post_meta($post_id,self::META_NEXTTRY,0);
+            } else {
+                update_post_meta($post_id,self::META_STATUS,'queued');
+                update_post_meta($post_id,self::META_NEXTTRY,$now + $delay);
             }
         }
 
-        return add_query_arg('krv_notice', 'queued', $redirect);
+        delete_transient(self::CRON_LOCK_KEY);
     }
 
-    /* ===================== Test ===================== */
+    private static function retry_delay(int $attempt): ?int {
+        $i = $attempt - 1;
+        return array_key_exists($i, self::$backoff) ? (int)self::$backoff[$i] : null;
+    }
 
-    public function handle_test_send(): void {
-        if ( ! current_user_can('manage_options') ) {
-            wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost'));
+    /* ================= ADMIN ACTIONS ================= */
+
+    public static function handle_send_test(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_send_test');
+
+        $s = self::get_settings();
+        $token = self::token($s);
+        $chat_id = (string)$s['chat_id'];
+
+        if ($token === '' || $chat_id === '') {
+            self::notice('error','Не задан token или chat_id.');
+            wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
             exit;
         }
 
-        check_admin_referer('krv_max_test_nonce');
-
-        $s = $this->get_settings();
-        $text = "Тестовое сообщение из WordPress\n\n" . home_url();
-
-        // try to use Site Icon as test image (optional)
-        $image_file = null;
-        $site_icon_url = get_site_icon_url(512);
-        if ( $site_icon_url ) {
-            $image_file = $this->download_to_temp($site_icon_url);
-        }
-
-        $res = $this->send_custom($text, $image_file, home_url());
-
-        if ( $image_file && file_exists($image_file) ) @unlink($image_file);
-
-        $redir = admin_url('admin.php?page=krv-max-autopost&tab=settings');
-        $redir = add_query_arg('krv_notice', $res === true ? 'test_ok' : 'test_fail', $redir);
-
-        if ( $res !== true ) $this->log_error(0, (string)$res);
-
-        wp_safe_redirect($redir);
-        exit;
-    }
-
-    /* ===================== Core: build + send ===================== */
-
-    public function send_post(int $post_id): bool|string {
-
-        $s = $this->get_settings();
-        $check = $this->check_settings($s);
-        if ( $check !== true ) return $check;
-
-        $text = $this->build_post_text($post_id);
-        $post_url = get_permalink($post_id);
-
+        $payload = ['text'=>"MAX Autopost: тест\n\n".home_url('/'),'notify'=>(bool)$s['notify']];
         $attachments = [];
 
-        // IMAGE FIRST (full payload)
-        if ( ! empty($s['include_image']) ) {
-            $upload_payload = $this->maybe_upload_featured_image($post_id, $s['token']);
-            if ( is_string($upload_payload) ) {
-                // error
-                return $upload_payload;
-            }
-            if ( is_array($upload_payload) ) {
-                $attachments[] = [
-                    'type'    => 'image',
-                    'payload' => $upload_payload, // IMPORTANT: full JSON from upload
-                ];
+        // Optional image (site icon)
+        if (!empty($s['include_image']) && function_exists('curl_init')) {
+            $site_icon = (int)get_option('site_icon');
+            if ($site_icon) {
+                $file = get_attached_file($site_icon);
+                if (is_string($file) && $file && file_exists($file)) {
+                    $up = self::upload($file, $token, 0);
+                    if ($up !== false) {
+                        $attachments[] = ['type'=>'image','payload'=>$up];
+                    }
+                }
             }
         }
 
-        // INLINE BUTTON SECOND
-        if ( ! empty($s['add_button']) ) {
+        if (!empty($s['add_button'])) {
             $attachments[] = [
-                'type'    => 'inline_keyboard',
-                'payload' => [
-                    'buttons' => [[[
-                        'type' => 'link',
-                        'text' => (string)$s['button_text'],
-                        'url'  => (string)$post_url,
+                'type'=>'inline_keyboard',
+                'payload'=>[
+                    'buttons'=>[[[
+                        'type'=>'link',
+                        'text'=>(string)$s['button_text'],
+                        'url'=>home_url('/'),
                     ]]],
                 ],
             ];
         }
 
-        $body = [
-            'text'   => $text,
-            'notify' => (bool) $s['notify'],
-        ];
+        if (!empty($attachments)) $payload['attachments'] = $attachments;
 
-        if ( ! empty($attachments) ) {
-            $body['attachments'] = $attachments;
-        }
+        $ok = self::api($payload, $chat_id, $token, 0, (bool)$s['debug']);
+        self::notice($ok===true?'success':'error', $ok===true?'Тест отправлен.':'Тест не отправился: '.self::short((string)$ok));
 
-        return $this->api_send_message($body, $s);
+        wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
+        exit;
     }
 
-    /**
-     * Sends arbitrary text using settings (and optional image/button).
-     * Used for test message.
-     */
-    private function send_custom(string $text, ?string $image_file, string $button_url): bool|string {
-
-        $s = $this->get_settings();
-        $check = $this->check_settings($s);
-        if ( $check !== true ) return $check;
-
-        $text = $this->limit_text($text, 3900);
-
-        $attachments = [];
-
-        if ( ! empty($s['include_image']) && $image_file && file_exists($image_file) ) {
-            $upload_payload = $this->upload_image_file($image_file, $s['token']);
-            if ( is_string($upload_payload) ) return $upload_payload;
-            if ( is_array($upload_payload) ) {
-                $attachments[] = [
-                    'type'    => 'image',
-                    'payload' => $upload_payload,
-                ];
-            }
-        }
-
-        if ( ! empty($s['add_button']) ) {
-            $attachments[] = [
-                'type'    => 'inline_keyboard',
-                'payload' => [
-                    'buttons' => [[[
-                        'type' => 'link',
-                        'text' => (string)$s['button_text'],
-                        'url'  => $button_url,
-                    ]]],
-                ],
-            ];
-        }
-
-        $body = [
-            'text'   => $text,
-            'notify' => (bool) $s['notify'],
-        ];
-
-        if ( ! empty($attachments) ) $body['attachments'] = $attachments;
-
-        return $this->api_send_message($body, $s);
+    public static function handle_run_queue(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_run_queue');
+        self::process_queue();
+        self::notice('success','Очередь запущена вручную.');
+        wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
+        exit;
     }
 
-    private function check_settings(array $s): bool|string {
-        if ( empty($s['token']) ) return 'MAX: token не задан.';
-        if ( empty($s['chat_id']) ) return 'MAX: chat_id не задан.';
-        return true;
+    public static function handle_requeue_errors(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_requeue_errors');
+
+        $posts = get_posts([
+            'post_type'=>'post','post_status'=>'any','numberposts'=>-1,
+            'meta_key'=>self::META_STATUS,'meta_value'=>'error',
+        ]);
+
+        foreach ($posts as $p) {
+            update_post_meta((int)$p->ID,self::META_STATUS,'queued');
+            update_post_meta((int)$p->ID,self::META_NEXTTRY,time());
+        }
+
+        self::notice('success','Ошибочные посты переведены в очередь.');
+        wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
+        exit;
     }
 
-    private function build_post_text(int $post_id): string {
-        $title = get_the_title($post_id);
-        $title = $title ? wp_strip_all_tags($title, true) : '';
+    public static function handle_send_now(): void {
+        if (!current_user_can('edit_posts')) wp_die('Forbidden');
 
-        $excerpt = get_post_field('post_excerpt', $post_id);
-        $excerpt = is_string($excerpt) ? trim($excerpt) : '';
+        $post_id = isset($_GET['post_id']) ? (int)$_GET['post_id'] : 0;
+        if (!$post_id) wp_die('Bad request');
+        check_admin_referer('krv_max_send_now_'.$post_id);
 
-        if ( $excerpt === '' ) {
-            $content = get_post_field('post_content', $post_id);
-            $content = is_string($content) ? $content : '';
-            $content = strip_shortcodes($content);
-            $content = wp_strip_all_tags($content, true);
-            $content = preg_replace('/\s+/u', ' ', $content);
-            $excerpt = trim((string)$content);
+        $res = self::send($post_id);
+
+        if ($res === true) {
+            update_post_meta($post_id,self::META_STATUS,'sent');
+            delete_post_meta($post_id,self::META_ERROR);
+            self::notice('success','Отправлено в MAX.');
         } else {
-            $excerpt = wp_strip_all_tags($excerpt, true);
+            update_post_meta($post_id,self::META_STATUS,'error');
+            update_post_meta($post_id,self::META_ERROR,(string)$res);
+            self::notice('error','Ошибка: '.self::short((string)$res));
         }
 
-        // A sane excerpt length; MAX limit applies below
-        if ( $excerpt !== '' ) {
-            $excerpt = $this->trim_words_mb($excerpt, 40, '…');
+        wp_safe_redirect(wp_get_referer() ?: admin_url('edit.php'));
+        exit;
+    }
+
+    /* ================= ROW / BULK ================= */
+
+    public static function row_action(array $actions, WP_Post $post): array {
+        if ($post->post_type !== 'post') return $actions;
+
+        $url = wp_nonce_url(
+            admin_url('admin-post.php?action=krv_max_send_now&post_id='.(int)$post->ID),
+            'krv_max_send_now_'.(int)$post->ID
+        );
+        $actions['krv_max_send'] = '<a href="'.esc_url($url).'">Отправить в MAX</a>';
+        return $actions;
+    }
+
+    public static function bulk_action(array $actions): array {
+        $actions['krv_max_bulk'] = 'Поставить в очередь MAX';
+        return $actions;
+    }
+
+    public static function handle_bulk(string $redirect_to, string $doaction, array $post_ids): string {
+        if ($doaction !== 'krv_max_bulk') return $redirect_to;
+
+        foreach ($post_ids as $id) {
+            self::queue_post((int)$id,'Bulk queue');
         }
 
-        $text = $title;
-        if ( $excerpt !== '' ) $text .= "\n\n" . $excerpt;
-
-        return $this->limit_text($text, 3900);
+        self::notice('success','Посты добавлены в очередь.');
+        return $redirect_to;
     }
 
-    private function limit_text(string $text, int $limit): string {
-        $text = trim((string)$text);
-        if ( mb_strlen($text) <= $limit ) return $text;
-        return rtrim(mb_substr($text, 0, $limit - 1)) . '…';
-    }
+    /* ================= CORE: send / upload / api ================= */
 
-    private function trim_words_mb(string $text, int $words, string $more): string {
-        $text = trim($text);
-        if ( $text === '' ) return '';
+    private static function send(int $post_id) {
+        $s = self::get_settings();
+        $token = self::token($s);
+        $chat_id = (string)$s['chat_id'];
 
-        // Rough word split with Unicode spaces
-        $parts = preg_split('/\s+/u', $text, -1, PREG_SPLIT_NO_EMPTY);
-        if ( ! is_array($parts) || count($parts) <= $words ) return $text;
+        if ($token === '' || $chat_id === '') return 'Не задан token/chat_id';
+        if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return 'Отключено в метабоксе.';
 
-        $parts = array_slice($parts, 0, $words);
-        return trim(implode(' ', $parts)) . $more;
-    }
+        $text = self::build_text($post_id);
+        $url  = get_permalink($post_id);
 
-    /* ===================== Upload (strict) ===================== */
+        $payload = ['text'=>$text,'notify'=>(bool)$s['notify']];
+        $attachments = [];
 
-    /**
-     * Upload featured image of a post. Returns:
-     * - array upload payload (token/url/type/...) on success
-     * - null if no image (allowed)
-     * - string error message on failure
-     */
-    private function maybe_upload_featured_image(int $post_id, string $token): array|string|null {
-
-        $thumb_id = get_post_thumbnail_id($post_id);
-        if ( ! $thumb_id ) return null;
-
-        $file = get_attached_file($thumb_id);
-        $file = is_string($file) ? $file : '';
-
-        if ( $file && file_exists($file) ) {
-            return $this->upload_image_file($file, $token);
+        // IMAGE first
+        if (!empty($s['include_image']) && function_exists('curl_init')) {
+            $file = self::resolve_image_file($post_id);
+            if ($file) {
+                $up = self::upload($file, $token, $post_id);
+                if ($up === false) return 'Upload failed (see logs)';
+                $attachments[] = ['type'=>'image','payload'=>$up]; // IMPORTANT: full JSON
+            }
         }
 
-        // Fallback: download by URL (for offload/S3 cases)
-        $src = wp_get_attachment_image_src($thumb_id, 'full');
-        $url = is_array($src) && ! empty($src[0]) ? (string)$src[0] : '';
-        if ( ! $url ) return null;
+        // BUTTON second
+        if (!empty($s['add_button'])) {
+            $attachments[] = [
+                'type'=>'inline_keyboard',
+                'payload'=>[
+                    'buttons'=>[[[
+                        'type'=>'link',
+                        'text'=>(string)$s['button_text'],
+                        'url'=>$url,
+                    ]]],
+                ],
+            ];
+        }
 
-        $tmp = $this->download_to_temp($url);
-        if ( ! $tmp ) return 'MAX upload: не удалось получить файл миниатюры (fallback download).';
+        if (!empty($attachments)) $payload['attachments'] = $attachments;
 
-        $res = $this->upload_image_file($tmp, $token);
-        @unlink($tmp);
+        // Dedupe (stable hash w/o upload payload)
+        $sig = [
+            'text'=>$payload['text'],
+            'notify'=>$payload['notify'],
+            'has_image'=>(int)(isset($attachments[0]) && $attachments[0]['type']==='image'),
+            'has_button'=>(int)!empty($s['add_button']),
+            'button_text'=>(string)$s['button_text'],
+            'url'=>$url,
+            'post_modified_gmt'=>get_post_modified_time('U', true, $post_id),
+        ];
+        $hash = hash('sha256', wp_json_encode($sig, JSON_UNESCAPED_UNICODE));
+        $prev = (string)get_post_meta($post_id,self::META_SENTHASH,true);
+        if ($prev && hash_equals($prev,$hash)) return true;
 
+        $res = self::api($payload, $chat_id, $token, $post_id, (bool)$s['debug']);
+        if ($res === true) {
+            update_post_meta($post_id,self::META_SENTHASH,$hash);
+            return true;
+        }
         return $res;
     }
 
     /**
-     * Performs 2-step MAX upload (strict JSON validation).
-     * Returns array payload (full JSON) or string error.
+     * Upload flow:
+     * 1) POST /uploads?type=image -> {url,type}
+     * 2) POST upload_url multipart (data=@file) -> JSON (may be {token,url,type} OR {"photos":{...}} etc.)
+     * IMPORTANT: For MAX we must pass FULL JSON response from step2 into image.payload.
      */
-    private function upload_image_file(string $file, string $token): array|string {
-
-        if ( ! function_exists('curl_init') ) {
-            return 'MAX upload: на сервере нет cURL (curl_init).';
+    private static function upload(string $file, string $token, int $post_id) {
+        if (!file_exists($file)) {
+            self::log('upload_step0', 0, $post_id, 'File not found: '.$file);
+            return false;
         }
 
-        if ( ! file_exists($file) ) {
-            return 'MAX upload: файл не найден: ' . basename($file);
-        }
-
-        // Step 1: request upload URL
-        $r1 = wp_remote_post(
-            'https://platform-api.max.ru/uploads?type=image',
-            [
-                'headers' => [
-                    'Authorization' => $token,
-                    'Content-Type'  => 'application/json',
-                ],
-                'body'    => '{}',
-                'timeout' => 20,
-            ]
-        );
-
-        if ( is_wp_error($r1) ) {
-            return 'MAX upload step1: ' . $r1->get_error_message();
-        }
-
-        $code1 = wp_remote_retrieve_response_code($r1);
-        $body1 = (string) wp_remote_retrieve_body($r1);
-
-        if ( $code1 < 200 || $code1 >= 300 ) {
-            return 'MAX upload step1 HTTP ' . $code1 . ': ' . $this->safe_snippet($body1);
-        }
-
-        $json1 = $this->json_decode_strict($body1);
-        if ( ! is_array($json1) || empty($json1['url']) ) {
-            return 'MAX upload step1: невалидный JSON или нет url. Ответ: ' . $this->safe_snippet($body1);
-        }
-
-        $upload_url = (string) $json1['url'];
-
-        // Step 2: multipart upload via cURL
-        $ch = curl_init($upload_url);
-        if ( ! $ch ) return 'MAX upload step2: curl_init failed.';
-
-        $post_fields = [
-            'data' => new CURLFile($file),
-        ];
-
-        curl_setopt_array($ch, [
-            CURLOPT_POST           => true,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POSTFIELDS     => $post_fields,
-            CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_TIMEOUT        => 30,
+        // step1
+        $r1 = wp_remote_post('https://platform-api.max.ru/uploads?type=image', [
+            'headers'=>[
+                'Authorization'=>$token,
+                'Content-Type'=>'application/json',
+            ],
+            'body'=>'{}',
+            'timeout'=>20,
         ]);
 
+        if (is_wp_error($r1)) {
+            self::log('upload_step1', 0, $post_id, $r1->get_error_message());
+            return false;
+        }
+
+        $code1 = (int)wp_remote_retrieve_response_code($r1);
+        $body1 = (string)wp_remote_retrieve_body($r1);
+
+        if ($code1 < 200 || $code1 >= 300) {
+            self::log('upload_step1', $code1, $post_id, 'HTTP '.$code1.': '.self::short($body1));
+            return false;
+        }
+
+        $j1 = json_decode($body1, true);
+        if (!is_array($j1) || empty($j1['url'])) {
+            self::log('upload_step1', $code1, $post_id, 'Bad JSON: '.self::short($body1));
+            return false;
+        }
+
+        // step2
+        $upload_url = (string)$j1['url'];
+
+        $ch = curl_init($upload_url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, ['data'=>new CURLFile($file)]);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 60);
+
         $out = curl_exec($ch);
-        $err = curl_error($ch);
-        $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $code2 = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $cerr = curl_error($ch);
         curl_close($ch);
 
-        if ( $out === false ) {
-            return 'MAX upload step2 cURL error: ' . ($err ?: 'unknown');
+        if ($out === false) {
+            self::log('upload_step2', $code2 ?: 0, $post_id, 'cURL error: '.$cerr);
+            return false;
         }
 
-        if ( $http < 200 || $http >= 300 ) {
-            return 'MAX upload step2 HTTP ' . $http . ': ' . $this->safe_snippet((string)$out);
+        if ($code2 < 200 || $code2 >= 300) {
+            self::log('upload_step2', $code2, $post_id, 'HTTP '.$code2.': '.self::short((string)$out));
+            return false;
         }
 
-        $json2 = $this->json_decode_strict((string)$out);
-        if ( ! is_array($json2) ) {
-            return 'MAX upload step2: невалидный JSON. Ответ: ' . $this->safe_snippet((string)$out);
+        $j2 = json_decode((string)$out, true);
+
+        // ✅ FIX (your log case): MAX may return nested objects, e.g. {"photos":{...:{token:"..."}}}
+        // We must accept any valid JSON object/array and pass it as-is into image.payload.
+        if (!is_array($j2) || empty($j2)) {
+            self::log('upload_step2', $code2, $post_id, 'Bad JSON: '.self::short((string)$out));
+            return false;
         }
 
-        // STRICT: must not be token-only; require token+url+type (at least)
-        $has_token = ! empty($json2['token']);
-        $has_url   = ! empty($json2['url']);
-        $has_type  = ! empty($json2['type']);
-
-        if ( ! ($has_token && $has_url && $has_type) ) {
-            return 'MAX upload step2: payload неполный (нужны token+url+type). Ответ: ' . $this->safe_snippet((string)$out);
-        }
-
-        return $json2; // IMPORTANT: full JSON payload
+        return $j2;
     }
 
-    /* ===================== API send ===================== */
+    private static function api(array $payload, string $chat_id, string $token, int $post_id, bool $debug) {
+        $url = 'https://platform-api.max.ru/messages?chat_id=' . rawurlencode($chat_id);
 
-    private function api_send_message(array $body, array $s): bool|string {
+        $r = wp_remote_post($url, [
+            'headers'=>[
+                'Authorization'=>$token,
+                'Content-Type'=>'application/json',
+            ],
+            'body'=>wp_json_encode($payload, JSON_UNESCAPED_UNICODE),
+            'timeout'=>20,
+        ]);
 
-        $url = 'https://platform-api.max.ru/messages?chat_id=' . rawurlencode((string)$s['chat_id']);
-
-        $res = wp_remote_post(
-            $url,
-            [
-                'headers' => [
-                    'Authorization' => (string)$s['token'],
-                    'Content-Type'  => 'application/json',
-                ],
-                'body'    => wp_json_encode($body, JSON_UNESCAPED_UNICODE),
-                'timeout' => 20,
-            ]
-        );
-
-        if ( is_wp_error($res) ) {
-            $msg = 'MAX send: ' . $res->get_error_message();
+        if (is_wp_error($r)) {
+            $msg = $r->get_error_message();
+            self::log('send', 0, $post_id, 'WP_Error: '.$msg);
             return $msg;
         }
 
-        $code = wp_remote_retrieve_response_code($res);
-        $raw  = (string) wp_remote_retrieve_body($res);
+        $code = (int)wp_remote_retrieve_response_code($r);
+        $body = (string)wp_remote_retrieve_body($r);
 
-        if ( $code < 200 || $code >= 300 ) {
-            $msg = 'MAX send HTTP ' . $code . ': ' . $this->safe_snippet($raw);
-            return $msg;
+        if ($code >= 200 && $code < 300) {
+            if ($debug && $body !== '') self::log('send', $code, $post_id, 'Response: '.self::short($body));
+            return true;
         }
 
-        // Validate JSON if present (MAX may return JSON or empty)
-        $trim = trim($raw);
-        if ( $trim !== '' ) {
-            $decoded = $this->json_decode_strict($trim);
-            if ( ! is_array($decoded) ) {
-                return 'MAX send: ответ не JSON (или битый JSON). Ответ: ' . $this->safe_snippet($raw);
+        self::log('send', $code, $post_id, 'HTTP '.$code.': '.self::short($body));
+        return 'HTTP '.$code.': '.self::short($body);
+    }
+
+    /* ================= HELPERS ================= */
+
+    private static function build_text(int $post_id): string {
+        $override = trim((string)get_post_meta($post_id,self::META_OVERRIDE,true));
+        $override = str_replace(["\r\n","\r"], "\n", $override);
+        if ($override !== '') return self::limit_text($override);
+
+        $title = get_the_title($post_id);
+
+        $excerpt = has_excerpt($post_id)
+            ? get_the_excerpt($post_id)
+            : wp_strip_all_tags(strip_shortcodes((string)get_post_field('post_content',$post_id)));
+
+        $excerpt = trim(preg_replace('/\s+/', ' ', (string)$excerpt));
+        $excerpt = wp_trim_words($excerpt, 40, '…');
+
+        return self::limit_text(trim($title . "\n\n" . $excerpt));
+    }
+
+    private static function limit_text(string $text): string {
+        $text = trim($text);
+        if (mb_strlen($text) > self::MAX_TEXT) $text = mb_substr($text, 0, self::MAX_TEXT);
+        return $text;
+    }
+
+    private static function resolve_image_file(int $post_id): ?string {
+        $thumb_id = (int)get_post_thumbnail_id($post_id);
+        if ($thumb_id) {
+            $file = get_attached_file($thumb_id);
+            if (is_string($file) && $file && file_exists($file)) return $file;
+        }
+
+        $content = (string)get_post_field('post_content', $post_id);
+        if ($content && preg_match('/<img[^>]+src=["\']([^"\']+)["\']/i', $content, $m)) {
+            $src = (string)$m[1];
+            $u = wp_upload_dir();
+            if (!empty($u['baseurl']) && !empty($u['basedir']) && str_starts_with($src, (string)$u['baseurl'])) {
+                $path = wp_normalize_path(str_replace((string)$u['baseurl'], (string)$u['basedir'], $src));
+                if (file_exists($path)) return $path;
             }
         }
 
-        return true;
+        $site_icon_id = (int)get_option('site_icon');
+        if ($site_icon_id) {
+            $file = get_attached_file($site_icon_id);
+            if (is_string($file) && $file && file_exists($file)) return $file;
+        }
+
+        return null;
     }
 
-    /* ===================== Helpers ===================== */
+    private static function log(string $step, int $http, int $post_id, string $msg): void {
+        $logs = get_option(self::LOG_OPT, []);
+        $logs = is_array($logs) ? $logs : [];
 
-    private function json_decode_strict(string $raw): ?array {
-        $raw = trim($raw);
-        if ( $raw === '' ) return [];
-        $data = json_decode($raw, true);
-        if ( json_last_error() !== JSON_ERROR_NONE ) return null;
-        return is_array($data) ? $data : null;
-    }
-
-    private function safe_snippet(string $s, int $max = 900): string {
-        $s = trim($s);
-        $s = preg_replace('/\s+/u', ' ', $s);
-        if ( mb_strlen($s) <= $max ) return $s;
-        return mb_substr($s, 0, $max) . '…';
-    }
-
-    private function log_error(int $post_id, string $message): void {
-        $message = trim($message);
-        if ( $message === '' ) return;
-
-        $log = get_option(self::LOG_OPT_KEY, []);
-        if ( ! is_array($log) ) $log = [];
-
-        $log[] = [
-            'time'    => current_time('Y-m-d H:i:s'),
-            'post_id' => $post_id,
-            'message' => $message,
-        ];
-
-        // Keep last 50
-        $log = array_slice($log, -50);
-
-        update_option(self::LOG_OPT_KEY, $log, false);
-    }
-
-    private function download_to_temp(string $url): ?string {
-
-        $tmp = wp_tempnam($url);
-        if ( ! $tmp ) return null;
-
-        $r = wp_remote_get($url, [
-            'timeout'  => 20,
-            'headers'  => [
-                'User-Agent' => 'WordPress/' . get_bloginfo('version') . '; ' . home_url('/'),
-            ],
-            'redirection' => 5,
+        array_unshift($logs, [
+            'time'=>time(),
+            'post_id'=>$post_id,
+            'step'=>$step,
+            'http'=>$http,
+            'msg'=>self::short($msg),
         ]);
 
-        if ( is_wp_error($r) ) {
-            @unlink($tmp);
-            return null;
-        }
+        if (count($logs) > self::LOG_LIMIT) $logs = array_slice($logs, 0, self::LOG_LIMIT);
+        update_option(self::LOG_OPT, $logs, false);
+    }
 
-        $code = wp_remote_retrieve_response_code($r);
-        $body = wp_remote_retrieve_body($r);
-
-        if ( $code < 200 || $code >= 300 || ! $body ) {
-            @unlink($tmp);
-            return null;
-        }
-
-        file_put_contents($tmp, $body);
-        return $tmp;
+    private static function short(string $s): string {
+        $s = trim(preg_replace('/\s+/', ' ', $s));
+        if (mb_strlen($s) > 320) $s = mb_substr($s, 0, 320) . '…';
+        return $s;
     }
 }
 
-/* ===================== Boot ===================== */
-
-add_action('plugins_loaded', static function() {
-    $p = KRV_MAX_Autopost::instance();
-    $p->hooks();
-});
+KRV_MAX_Autopost::init();
 
 register_activation_hook(__FILE__, ['KRV_MAX_Autopost', 'activate']);
 register_deactivation_hook(__FILE__, ['KRV_MAX_Autopost', 'deactivate']);

@@ -1,46 +1,41 @@
-=== MAX Autopost ===
+=== MAX Autopost (Free) ===
 Contributors: drslon
-Tags: max, autopost, messenger, wordpress, cron
+Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
-Tested up to: 6.5
+Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.0.0
+Stable tag: 1.2.1
 License: MIT
-License URI: https://opensource.org/licenses/MIT
+License URI: https://opensource.org/license/mit/
 
-Production-ready автопостинг из WordPress в MAX (platform-api.max.ru).
+Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (картинка + текст + кнопка), очередь WP-Cron, retry, логи.
 
 == Description ==
 
-Плагин отправляет опубликованные записи WordPress в канал MAX одним сообщением:
+Плагин отправляет опубликованные записи WordPress в MAX одним сообщением.
 
-1) IMAGE (первым attachment, через 2-step upload, payload = полный JSON)
-2) TEXT (заголовок + excerpt)
-3) INLINE BUTTON (вторым attachment)
+Формат:
+* IMAGE attachment (первый, если включено и есть картинка)
+* TEXT (подпись) — поле `text`
+* INLINE BUTTON (второй attachment, если включено)
 
-Есть очередь через WP-Cron (каждую минуту) и ручная отправка (row action + bulk).
+Ключевой момент MAX:
+* картинка игнорируется, если передать только token
+* image должен быть первым attachment
+* в image.payload должен быть ПОЛНЫЙ JSON, полученный после upload (ответ step2 может быть вложенным, например {"photos":{...}})
 
 == Installation ==
-
-1. Скопируйте папку `max-autopost` в `wp-content/plugins/`
-2. Активируйте плагин в админке WordPress.
-3. Откройте меню `MAX Autopost` и заполните Token и Chat ID.
-4. Опубликуйте пост — он попадет в очередь.
-
-== Usage ==
-
-- При публикации поста: ставится `_krv_max_status = queued`.
-- WP-Cron раз в минуту отправляет до 5 постов со статусом `queued`.
-- Статусы: `queued | processing | sent | error`.
-- Ошибка сохраняется в `_krv_max_error` и в лог (последние 50 ошибок).
-
-== Notes ==
-
-- Для загрузки изображений требуется расширение PHP cURL.
-- MAX игнорирует image attachment, если payload неполный или не первый — в плагине это учтено.
-- Максимальная длина текста сообщения ограничена 3900 символами.
+1) Загрузите папку `max-autopost` в `/wp-content/plugins/`
+2) Активируйте плагин
+3) MAX Autopost → Настройки → Token/Chat ID
+4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.2.1 =
+* Fix: upload step2 JSON может быть вложенным (например, {"photos":{...}}) — теперь принимаем и отправляем payload целиком.
 
-= 1.0.0 =
-* Initial release.
+= 1.2.0 =
+* Кнопка “Читать” (inline_keyboard)
+* Очередь WP-Cron, cron lock, retry/backoff
+* Метабокс (disable + override + send now)
+* Логи
