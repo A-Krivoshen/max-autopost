@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.3.0
+ * Version: 1.4.0
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -51,10 +51,14 @@ final class KRV_MAX_Autopost {
         add_action('admin_post_krv_max_run_queue', [__CLASS__, 'handle_run_queue']);
         add_action('admin_post_krv_max_requeue_errors', [__CLASS__, 'handle_requeue_errors']);
         add_action('admin_post_krv_max_send_now', [__CLASS__, 'handle_send_now']);
+        add_action('admin_post_krv_max_queue_now', [__CLASS__, 'handle_queue_now']);
+        add_action('admin_post_krv_max_queue_all_published', [__CLASS__, 'handle_queue_all_published']);
 
-        add_filter('post_row_actions', [__CLASS__, 'row_action'], 10, 2);
-        add_filter('bulk_actions-edit-post', [__CLASS__, 'bulk_action']);
-        add_filter('handle_bulk_actions-edit-post', [__CLASS__, 'handle_bulk'], 10, 3);
+        foreach (self::supported_post_types() as $post_type) {
+            add_filter($post_type . '_row_actions', [__CLASS__, 'row_action'], 10, 2);
+            add_filter('bulk_actions-edit-' . $post_type, [__CLASS__, 'bulk_action']);
+            add_filter('handle_bulk_actions-edit-' . $post_type, [__CLASS__, 'handle_bulk'], 10, 3);
+        }
     }
 
     public static function activate(): void {
@@ -155,7 +159,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.2.1</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.4.0</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -227,14 +231,19 @@ final class KRV_MAX_Autopost {
         echo '<input type="hidden" name="action" value="krv_max_requeue_errors">';
         submit_button('Requeue errors','secondary','submit',false);
         echo '</form>';
+        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+        wp_nonce_field('krv_max_queue_all_published');
+        echo '<input type="hidden" name="action" value="krv_max_queue_all_published">';
+        submit_button('Поставить все опубликованные в очередь','secondary','submit',false,['onclick'=>"return confirm('Добавить все опубликованные материалы в очередь MAX?');"]);
+        echo '</form>';
         echo '</div>';
 
         $q = new WP_Query([
-            'post_type'=>'post','post_status'=>'any','posts_per_page'=>50,
+            'post_type'=>self::supported_post_types(),'post_status'=>'any','posts_per_page'=>50,
             'meta_key'=>self::META_STATUS,'orderby'=>'date','order'=>'DESC',
         ]);
 
-        echo '<table class="widefat striped"><thead><tr><th>Пост</th><th>Статус</th><th>Попытки</th><th>Next try</th><th>Ошибка</th></tr></thead><tbody>';
+        echo '<table class="widefat striped"><thead><tr><th>Пост</th><th>Тип</th><th>Статус</th><th>Попытки</th><th>Next try</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>';
         if ($q->have_posts()) {
             while ($q->have_posts()) {
                 $q->the_post();
@@ -246,15 +255,21 @@ final class KRV_MAX_Autopost {
 
                 echo '<tr>';
                 echo '<td><a href="'.esc_url(get_edit_post_link($id)).'">'.esc_html(get_the_title()).'</a></td>';
+                echo '<td>'.esc_html(get_post_type($id) ?: '-').'</td>';
                 echo '<td>'.esc_html($st ?: '-').'</td>';
                 echo '<td>'.esc_html((string)$att).'</td>';
                 echo '<td>'.esc_html($nt ? wp_date('Y-m-d H:i:s',$nt) : '-').'</td>';
                 echo '<td title="'.esc_attr($err).'" style="max-width:520px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'.esc_html($err).'</td>';
+
+                $send_url = wp_nonce_url(admin_url('admin-post.php?action=krv_max_send_now&post_id='.(int)$id), 'krv_max_send_now_'.(int)$id);
+                $queue_url = wp_nonce_url(admin_url('admin-post.php?action=krv_max_queue_now&post_id='.(int)$id), 'krv_max_queue_now_'.(int)$id);
+                echo '<td><a class="button button-small" href="'.esc_url($send_url).'">Отправить</a> ';
+                echo '<a class="button button-small" href="'.esc_url($queue_url).'">В очередь</a></td>';
                 echo '</tr>';
             }
             wp_reset_postdata();
         } else {
-            echo '<tr><td colspan="5">Очередь пуста.</td></tr>';
+            echo '<tr><td colspan="7">Очередь пуста.</td></tr>';
         }
         echo '</tbody></table>';
     }
@@ -289,7 +304,9 @@ final class KRV_MAX_Autopost {
     /* ================= METABOX ================= */
 
     public static function add_metabox(): void {
-        add_meta_box('krv_max_box','MAX Autopost',[__CLASS__,'render_metabox'],'post','side');
+        foreach (self::supported_post_types() as $post_type) {
+            add_meta_box('krv_max_box','MAX Autopost',[__CLASS__,'render_metabox'],$post_type,'side');
+        }
     }
 
     public static function render_metabox(WP_Post $post): void {
@@ -310,7 +327,7 @@ final class KRV_MAX_Autopost {
     }
 
     public static function save_metabox(int $post_id, WP_Post $post): void {
-        if ($post->post_type !== 'post') return;
+        if (!self::is_supported_post_type($post->post_type)) return;
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
 
         if (!isset($_POST['krv_max_metabox_nonce']) || !wp_verify_nonce((string)$_POST['krv_max_metabox_nonce'],'krv_max_metabox')) return;
@@ -330,7 +347,7 @@ final class KRV_MAX_Autopost {
     /* ================= PUBLISH → QUEUE ================= */
 
     public static function queue_on_publish(string $new_status, string $old_status, WP_Post $post): void {
-        if ($post->post_type !== 'post') return;
+        if (!self::is_supported_post_type($post->post_type)) return;
         if ($new_status !== 'publish') return;
         if ($old_status === 'publish') return;
 
@@ -370,7 +387,7 @@ final class KRV_MAX_Autopost {
         $now = time();
 
         $q = new WP_Query([
-            'post_type'=>'post','post_status'=>'publish','posts_per_page'=>self::BATCH_LIMIT,
+            'post_type'=>self::supported_post_types(),'post_status'=>'publish','posts_per_page'=>self::BATCH_LIMIT,
             'orderby'=>'meta_value_num','meta_key'=>self::META_NEXTTRY,'order'=>'ASC',
             'meta_query'=>[
                 ['key'=>self::META_STATUS,'value'=>'queued'],
@@ -486,7 +503,7 @@ final class KRV_MAX_Autopost {
         check_admin_referer('krv_max_requeue_errors');
 
         $posts = get_posts([
-            'post_type'=>'post','post_status'=>'any','numberposts'=>-1,
+            'post_type'=>self::supported_post_types(),'post_status'=>'any','numberposts'=>-1,
             'meta_key'=>self::META_STATUS,'meta_value'=>'error',
         ]);
 
@@ -523,16 +540,56 @@ final class KRV_MAX_Autopost {
         exit;
     }
 
+
+    public static function handle_queue_now(): void {
+        if (!current_user_can('edit_posts')) wp_die('Forbidden');
+
+        $post_id = isset($_GET['post_id']) ? (int)$_GET['post_id'] : 0;
+        if (!$post_id) wp_die('Bad request');
+        check_admin_referer('krv_max_queue_now_'.$post_id);
+
+        self::queue_post($post_id,'Manual queue');
+        self::notice('success','Материал поставлен в очередь MAX.');
+
+        wp_safe_redirect(wp_get_referer() ?: admin_url('edit.php'));
+        exit;
+    }
+
+    public static function handle_queue_all_published(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_queue_all_published');
+
+        $posts = get_posts([
+            'post_type'=>self::supported_post_types(),
+            'post_status'=>'publish',
+            'numberposts'=>-1,
+            'fields'=>'ids',
+        ]);
+
+        foreach ($posts as $id) {
+            self::queue_post((int)$id,'Bulk queue all published');
+        }
+
+        self::notice('success','Все опубликованные материалы добавлены в очередь: '.count($posts));
+        wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
+        exit;
+    }
+
     /* ================= ROW / BULK ================= */
 
     public static function row_action(array $actions, WP_Post $post): array {
-        if ($post->post_type !== 'post') return $actions;
+        if (!self::is_supported_post_type($post->post_type)) return $actions;
 
         $url = wp_nonce_url(
             admin_url('admin-post.php?action=krv_max_send_now&post_id='.(int)$post->ID),
             'krv_max_send_now_'.(int)$post->ID
         );
+        $queue_url = wp_nonce_url(
+            admin_url('admin-post.php?action=krv_max_queue_now&post_id='.(int)$post->ID),
+            'krv_max_queue_now_'.(int)$post->ID
+        );
         $actions['krv_max_send'] = '<a href="'.esc_url($url).'">Отправить в MAX</a>';
+        $actions['krv_max_queue'] = '<a href="'.esc_url($queue_url).'">В очередь MAX</a>';
         return $actions;
     }
 
@@ -545,6 +602,10 @@ final class KRV_MAX_Autopost {
         if ($doaction !== 'krv_max_bulk') return $redirect_to;
 
         foreach ($post_ids as $id) {
+            $post = get_post((int)$id);
+            if (!$post || !self::is_supported_post_type($post->post_type)) {
+                continue;
+            }
             self::queue_post((int)$id,'Bulk queue');
         }
 
@@ -560,6 +621,12 @@ final class KRV_MAX_Autopost {
         $chat_id = (string)$s['chat_id'];
 
         if ($token === '' || $chat_id === '') return 'Не задан token/chat_id';
+
+        $post = get_post($post_id);
+        if (!$post) return 'Пост не найден';
+        if (!self::is_supported_post_type($post->post_type)) return 'Тип записи не поддерживается';
+        if ($post->post_status !== 'publish') return 'Можно отправлять только опубликованные материалы';
+
         if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return 'Отключено в метабоксе.';
 
         $text = self::build_text($post_id, $s);
@@ -724,6 +791,23 @@ final class KRV_MAX_Autopost {
     }
 
     /* ================= HELPERS ================= */
+    private static function supported_post_types(): array {
+        $types = get_post_types([
+            'public' => true,
+            'show_ui' => true,
+        ], 'names');
+
+        $types = array_values(array_filter($types, static function(string $type): bool {
+            return !in_array($type, ['attachment', 'revision', 'nav_menu_item'], true);
+        }));
+
+        return !empty($types) ? $types : ['post'];
+    }
+
+    private static function is_supported_post_type(string $post_type): bool {
+        return in_array($post_type, self::supported_post_types(), true);
+    }
+
 
     private static function build_text(int $post_id, array $settings): string {
         $override = trim((string)get_post_meta($post_id,self::META_OVERRIDE,true));
