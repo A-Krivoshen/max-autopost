@@ -1,7 +1,11 @@
-# MAX Autopost (Free) v1.2.1
+# MAX Autopost (Free) v1.3.0
 
 Fix релиз: MAX upload step2 иногда возвращает payload не как `{token,url,type}`, а как вложенный объект, например `{"photos":{...}}`.  
 Плагин теперь принимает **любой валидный JSON** и передаёт его целиком в `image.payload`.
+
+## Что нового в 1.3.0
+- Добавлена публикация кастомных полей в конце текста поста.
+- Настройка маппинга через список `meta_key|Подпись` (или только `meta_key`).
 
 ## Features
 - One message: image (optional) + text + button (optional)

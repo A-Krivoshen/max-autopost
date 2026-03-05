@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.2.1
+Stable tag: 1.3.0
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,9 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.3.0 =
+* Новое: публикация кастомных полей (meta) в тексте сообщения по настраиваемому маппингу.
+
 = 1.2.1 =
 * Fix: upload step2 JSON может быть вложенным (например, {"photos":{...}}) — теперь принимаем и отправляем payload целиком.
 
