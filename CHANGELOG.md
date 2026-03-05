@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.0
+- Added support for publishing selected custom fields in the post text.
+- Added admin settings for custom field mapping (`meta_key|Label`).
+
 ## 1.2.1
 - Fix: upload step2 payload can be nested (e.g. {"photos":{...}}). Accept and pass full JSON to image.payload.
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.2.1
+ * Version: 1.3.0
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -77,6 +77,8 @@ final class KRV_MAX_Autopost {
             'include_image' => 1,
             'add_button'    => 1,
             'button_text'   => 'Читать',
+            'publish_custom_fields' => 0,
+            'custom_fields_map'     => '',
             'notify'        => 1,
             'debug'         => 0,
         ];
@@ -109,6 +111,9 @@ final class KRV_MAX_Autopost {
 
         $out['button_text'] = isset($in['button_text']) ? sanitize_text_field((string)$in['button_text']) : $d['button_text'];
         if ($out['button_text'] === '') $out['button_text'] = $d['button_text'];
+
+        $out['publish_custom_fields'] = !empty($in['publish_custom_fields']) ? 1 : 0;
+        $out['custom_fields_map'] = isset($in['custom_fields_map']) ? sanitize_textarea_field((string)$in['custom_fields_map']) : $d['custom_fields_map'];
 
         $out['notify'] = !empty($in['notify']) ? 1 : 0;
         $out['debug']  = !empty($in['debug']) ? 1 : 0;
@@ -186,6 +191,12 @@ final class KRV_MAX_Autopost {
         echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_button]" value="1" '.checked((int)$s['add_button'],1,false).'> Включить кнопку “Читать”</label><br>';
         echo '<input type="text" name="'.esc_attr(self::OPT).'[button_text]" value="'.esc_attr($s['button_text']).'" style="width:220px;">';
         echo '<p class="description">inline_keyboard идёт <strong>вторым attachment</strong> (после image, если он есть).</p>';
+        echo '</td></tr>';
+
+        echo '<tr><th>Кастомные поля</th><td>';
+        echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[publish_custom_fields]" value="1" '.checked((int)$s['publish_custom_fields'],1,false).'> Публиковать значения выбранных полей</label>';
+        echo '<textarea name="'.esc_attr(self::OPT).'[custom_fields_map]" class="large-text code" rows="5" placeholder="price|Цена\nsku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>';
+        echo '<p class="description">По одному полю на строку: <code>meta_key|Подпись</code> или только <code>meta_key</code>. Непустые значения добавляются в конец текста публикации.</p>';
         echo '</td></tr>';
 
         echo '<tr><th>Notify</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[notify]" value="1" '.checked((int)$s['notify'],1,false).'> notify=true</label></td></tr>';
@@ -551,7 +562,7 @@ final class KRV_MAX_Autopost {
         if ($token === '' || $chat_id === '') return 'Не задан token/chat_id';
         if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return 'Отключено в метабоксе.';
 
-        $text = self::build_text($post_id);
+        $text = self::build_text($post_id, $s);
         $url  = get_permalink($post_id);
 
         $payload = ['text'=>$text,'notify'=>(bool)$s['notify']];
@@ -714,10 +725,10 @@ final class KRV_MAX_Autopost {
 
     /* ================= HELPERS ================= */
 
-    private static function build_text(int $post_id): string {
+    private static function build_text(int $post_id, array $settings): string {
         $override = trim((string)get_post_meta($post_id,self::META_OVERRIDE,true));
         $override = str_replace(["\r\n","\r"], "\n", $override);
-        if ($override !== '') return self::limit_text($override);
+        if ($override !== '') return self::append_custom_fields($override, $post_id, $settings);
 
         $title = get_the_title($post_id);
 
@@ -728,7 +739,66 @@ final class KRV_MAX_Autopost {
         $excerpt = trim(preg_replace('/\s+/', ' ', (string)$excerpt));
         $excerpt = wp_trim_words($excerpt, 40, '…');
 
-        return self::limit_text(trim($title . "\n\n" . $excerpt));
+        $base = trim($title . "\n\n" . $excerpt);
+        return self::append_custom_fields($base, $post_id, $settings);
+    }
+
+    private static function append_custom_fields(string $text, int $post_id, array $settings): string {
+        if (empty($settings['publish_custom_fields'])) {
+            return self::limit_text($text);
+        }
+
+        $fields = self::parse_custom_fields_map((string)($settings['custom_fields_map'] ?? ''));
+        if (empty($fields)) {
+            return self::limit_text($text);
+        }
+
+        $lines = [];
+        foreach ($fields as $field) {
+            $value = get_post_meta($post_id, $field['key'], true);
+            if (is_array($value)) {
+                $value = wp_json_encode($value, JSON_UNESCAPED_UNICODE);
+            }
+            $value = trim((string)$value);
+            if ($value === '') {
+                continue;
+            }
+
+            $lines[] = $field['label'] !== '' ? ($field['label'] . ': ' . $value) : $value;
+        }
+
+        if (empty($lines)) {
+            return self::limit_text($text);
+        }
+
+        return self::limit_text($text . "\n\n" . implode("\n", $lines));
+    }
+
+    private static function parse_custom_fields_map(string $map): array {
+        $rows = preg_split('/\r\n|\r|\n/', trim($map)) ?: [];
+        $result = [];
+
+        foreach ($rows as $row) {
+            $row = trim((string)$row);
+            if ($row === '') {
+                continue;
+            }
+
+            [$key, $label] = array_pad(explode('|', $row, 2), 2, '');
+            $key = sanitize_key(trim((string)$key));
+            $label = sanitize_text_field(trim((string)$label));
+
+            if ($key === '') {
+                continue;
+            }
+
+            $result[] = [
+                'key' => $key,
+                'label' => $label,
+            ];
+        }
+
+        return $result;
     }
 
     private static function limit_text(string $text): string {
