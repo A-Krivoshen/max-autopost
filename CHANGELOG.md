@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.1
+- Improved queue auto-start reliability by triggering worker immediately after queueing.
+- Added explicit handling for scheduled publications (`future -> publish`).
+
 ## 1.4.0
 - Improved admin queue UI with quick actions (send now / queue now).
 - Added admin action to queue all published content.

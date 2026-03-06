@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.4.0
+Stable tag: 1.4.1
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.4.1 =
+* Улучшен автостарт очереди: при добавлении постов в очередь запускается cron worker (single event + loopback).
+* Добавлен отдельный хук для запланированных публикаций (future -> publish).
+
 = 1.4.0 =
 * Улучшена админка очереди: действия «Отправить» и «В очередь» в таблице.
 * Добавлена кнопка постановки в очередь всех опубликованных материалов.

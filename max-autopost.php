@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.4.0
+ * Version: 1.4.1
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -42,6 +42,7 @@ final class KRV_MAX_Autopost {
         add_action('admin_notices', [__CLASS__, 'admin_notices']);
 
         add_action('transition_post_status', [__CLASS__, 'queue_on_publish'], 10, 3);
+        add_action('future_to_publish', [__CLASS__, 'queue_on_future_publish'], 10, 1);
         add_action(self::CRON_HOOK, [__CLASS__, 'process_queue']);
 
         add_action('add_meta_boxes', [__CLASS__, 'add_metabox']);
@@ -159,7 +160,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.4.0</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.4.1</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -355,7 +356,11 @@ final class KRV_MAX_Autopost {
         if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return;
 
         self::queue_post($post_id,'Auto queue on publish');
-        self::spawn_cron();
+        self::trigger_queue_worker();
+    }
+
+    public static function queue_on_future_publish(WP_Post $post): void {
+        self::queue_on_publish('publish', 'future', $post);
     }
 
     private static function queue_post(int $post_id, string $why=''): void {
@@ -366,9 +371,18 @@ final class KRV_MAX_Autopost {
         self::log('queue',0,$post_id,$why ?: 'queued');
     }
 
+    private static function trigger_queue_worker(): void {
+        if (!wp_next_scheduled(self::CRON_HOOK)) {
+            wp_schedule_event(time() + 60, self::CRON_SCHEDULE, self::CRON_HOOK);
+        }
+
+        wp_schedule_single_event(time() + 5, self::CRON_HOOK);
+        self::spawn_cron();
+    }
+
     private static function spawn_cron(): void {
         $url = site_url('wp-cron.php?doing_wp_cron=' . urlencode((string)microtime(true)));
-        wp_remote_post($url, ['timeout'=>0.01,'blocking'=>false]);
+        wp_remote_post($url, ['timeout'=>1,'blocking'=>false]);
     }
 
     /* ================= CRON ================= */
@@ -512,6 +526,7 @@ final class KRV_MAX_Autopost {
             update_post_meta((int)$p->ID,self::META_NEXTTRY,time());
         }
 
+        self::trigger_queue_worker();
         self::notice('success','Ошибочные посты переведены в очередь.');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
@@ -549,6 +564,7 @@ final class KRV_MAX_Autopost {
         check_admin_referer('krv_max_queue_now_'.$post_id);
 
         self::queue_post($post_id,'Manual queue');
+        self::trigger_queue_worker();
         self::notice('success','Материал поставлен в очередь MAX.');
 
         wp_safe_redirect(wp_get_referer() ?: admin_url('edit.php'));
@@ -570,6 +586,7 @@ final class KRV_MAX_Autopost {
             self::queue_post((int)$id,'Bulk queue all published');
         }
 
+        self::trigger_queue_worker();
         self::notice('success','Все опубликованные материалы добавлены в очередь: '.count($posts));
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
@@ -609,6 +626,7 @@ final class KRV_MAX_Autopost {
             self::queue_post((int)$id,'Bulk queue');
         }
 
+        self::trigger_queue_worker();
         self::notice('success','Посты добавлены в очередь.');
         return $redirect_to;
     }
