@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.8.0
+ * Version: 1.8.3
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -16,8 +16,9 @@ final class KRV_MAX_Autopost {
     private const VER_OPT = 'krv_max_autopost_ver';
     private const CUTOFF_OPT = 'krv_max_autopost_queue_cutoff';
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
+    private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.8.0';
+    private const VERSION = '1.8.3';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -91,6 +92,7 @@ final class KRV_MAX_Autopost {
         update_option(self::VER_OPT, self::VERSION, false);
         update_option(self::CUTOFF_OPT, $cutoff, false);
         update_option(self::INSTALL_STAMP_OPT, self::new_install_stamp(), false);
+        update_option(self::WORKER_ENABLED_OPT, 0, false);
         self::quarantine_stale_queue($cutoff);
     }
 
@@ -112,11 +114,16 @@ final class KRV_MAX_Autopost {
         update_option(self::VER_OPT, self::VERSION, false);
         update_option(self::CUTOFF_OPT, $cutoff, false);
         update_option(self::INSTALL_STAMP_OPT, self::new_install_stamp(), false);
+        update_option(self::WORKER_ENABLED_OPT, 0, false);
         self::quarantine_stale_queue($cutoff);
     }
 
     private static function new_install_stamp(): string {
         return wp_generate_uuid4() . '-' . (string)time();
+    }
+
+    private static function is_worker_enabled(): bool {
+        return (int)get_option(self::WORKER_ENABLED_OPT, 0) === 1;
     }
 
     private static function current_install_stamp(): string {
@@ -261,7 +268,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.0</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.3</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -375,6 +382,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<input type="hidden" name="action" value="krv_max_run_queue">';
         submit_button('Запустить очередь сейчас','secondary','submit',false);
         echo '</form>';
+        echo '<p class="description" style="margin:6px 0 0;">Сохранение Token/Chat ID не запускает автоотправку старой очереди. Ручной запуск отправляет только 1 элемент за нажатие.</p>';
 
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
         wp_nonce_field('krv_max_requeue_errors');
@@ -590,7 +598,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return $schedules;
     }
 
-    public static function process_queue(): void {
+    public static function process_queue(bool $force = false): void {
+        if (!$force && !self::is_worker_enabled()) return;
         if (get_transient(self::CRON_LOCK_KEY)) return;
         set_transient(self::CRON_LOCK_KEY, 1, 55);
 
@@ -720,8 +729,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     public static function handle_run_queue(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
         check_admin_referer('krv_max_run_queue');
-        self::process_queue();
-        self::notice('success','Очередь запущена вручную.');
+        self::process_queue(true);
+        self::notice('success','Очередь запущена вручную (1 элемент).');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
     }

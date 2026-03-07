@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.8.3
+- Manual queue run now processes exactly one item per click.
+- Manual run no longer arms persistent automatic worker mode.
+
+## 1.8.2
+- Disabled automatic worker arming on settings save (token/chat id).
+- Queue sending now starts only on explicit manual queue run, preventing immediate old-message bursts after entering credentials.
+
+## 1.8.1
+- Added safe-start behavior: queue worker is disabled after install/upgrade until valid token/chat id are saved or queue is manually started.
+- Prevents immediate burst auto-sends right after fresh install.
+
 ## 1.8.0
 - Added install-stamp queue isolation: worker now sends only items queued during the current plugin install/upgrade cycle.
 - Legacy queued items from previous installs/upgrades are quarantined and cannot auto-send after entering token/chat id.
