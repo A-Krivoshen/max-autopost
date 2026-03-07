@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.8
+- Restored custom post type support reliability: row/bulk hooks are now registered on `init` after CPT registration.
+- Removed request-local post-type list caching that could hide CPTs in settings/hook registration.
+
 ## 1.7.7
 - Refactored repeated normalization logic into dedicated helpers for text limit and image source mode.
 - Optimized queue worker query (`no_found_rows`, reduced cache work) and guaranteed lock release via `finally`.

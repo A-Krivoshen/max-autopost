@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.7.7
+Stable tag: 1.7.8
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.7.8 =
+* Возвращена поддержка кастомных типов записей: регистрация row/bulk hooks перенесена на `init` после регистрации CPT.
+* Убрано кэширование списков типов записей, чтобы кастомные типы не пропадали из настроек.
+
 = 1.7.7 =
 * Внутренний рефакторинг: нормализация лимита текста и режима источника изображения вынесена в отдельные helper-функции.
 * Оптимизирован cron-обработчик очереди: добавлены `finally` для снятия lock и облегчённые параметры запроса.

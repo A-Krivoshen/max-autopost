@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.7.7
+ * Version: 1.7.8
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -16,7 +16,7 @@ final class KRV_MAX_Autopost {
     private const VER_OPT = 'krv_max_autopost_ver';
     private const CUTOFF_OPT = 'krv_max_autopost_queue_cutoff';
 
-    private const VERSION = '1.7.7';
+    private const VERSION = '1.7.8';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -63,11 +63,21 @@ final class KRV_MAX_Autopost {
         add_action('admin_post_krv_max_queue_now', [__CLASS__, 'handle_queue_now']);
         add_action('admin_post_krv_max_queue_all_published', [__CLASS__, 'handle_queue_all_published']);
 
+        // Register row/bulk hooks after all CPTs are registered.
+        add_action('init', [__CLASS__, 'register_post_type_hooks'], 20);
+    }
+
+    public static function register_post_type_hooks(): void {
+        static $registered = false;
+        if ($registered) return;
+
         foreach (self::supported_post_types() as $post_type) {
             add_filter($post_type . '_row_actions', [__CLASS__, 'row_action'], 10, 2);
             add_filter('bulk_actions-edit-' . $post_type, [__CLASS__, 'bulk_action']);
             add_filter('handle_bulk_actions-edit-' . $post_type, [__CLASS__, 'handle_bulk'], 10, 3);
         }
+
+        $registered = true;
     }
 
     public static function activate(): void {
@@ -202,7 +212,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.7.7</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.7.8</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -1065,11 +1075,6 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     /* ================= HELPERS ================= */
     private static function supported_post_types(): array {
-        static $cache = null;
-        if (is_array($cache)) {
-            return $cache;
-        }
-
         $s = self::get_settings();
         $types = isset($s['enabled_post_types']) && is_array($s['enabled_post_types']) ? $s['enabled_post_types'] : [];
         $types = array_values(array_unique(array_filter(array_map(static fn($k) => sanitize_key((string)$k), $types))));
@@ -1077,19 +1082,13 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $allowed = array_keys(self::available_post_types());
         $types = array_values(array_intersect($types, $allowed));
 
-        $cache = !empty($types) ? $types : ['post'];
-        return $cache;
+        return !empty($types) ? $types : ['post'];
     }
 
     private static function is_supported_post_type(string $post_type): bool {
         return in_array($post_type, self::supported_post_types(), true);
     }
     private static function available_post_types(): array {
-        static $cache = null;
-        if (is_array($cache)) {
-            return $cache;
-        }
-
         $objs = get_post_types([
             'public' => true,
             'show_ui' => true,
@@ -1106,8 +1105,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         if (!isset($out['post'])) $out['post'] = 'Записи';
-        $cache = $out;
-        return $cache;
+        return $out;
     }
 
     private static function normalize_image_source_mode(string $mode): string {
