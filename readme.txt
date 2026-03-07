@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.5.1
+Stable tag: 1.5.2
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.5.2 =
+* Добавлена защита от авто-рассылки старых queued-постов сразу после обновления плагина.
+* Старые элементы очереди можно отправить только после ручной постановки в очередь.
+
 = 1.5.1 =
 * Галочки в настройках переведены на выбор типов записей (включая кастомные).
 * Контакт поддержки визуально отделён от рекламного виджета.

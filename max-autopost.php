@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.5.1
+ * Version: 1.5.2
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -13,11 +13,16 @@ final class KRV_MAX_Autopost {
 
     private const OPT     = 'krv_max_autopost';
     private const LOG_OPT = 'krv_max_autopost_logs';
+    private const VER_OPT = 'krv_max_autopost_ver';
+    private const CUTOFF_OPT = 'krv_max_autopost_queue_cutoff';
+
+    private const VERSION = '1.5.2';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
     private const META_ATTEMPTS = '_krv_max_attempts';
     private const META_NEXTTRY  = '_krv_max_next_try';
+    private const META_QUEUEDAT = '_krv_max_queued_at';
     private const META_SENTHASH = '_krv_max_sent_hash';
 
     private const META_DISABLE  = '_krv_max_disable';
@@ -35,6 +40,8 @@ final class KRV_MAX_Autopost {
     private static array $backoff = [60, 180, 600, 1800, 3600];
 
     public static function init(): void {
+        self::maybe_handle_upgrade();
+
         add_filter('cron_schedules', [__CLASS__, 'cron_schedules']);
 
         add_action('admin_menu', [__CLASS__, 'admin_menu']);
@@ -66,6 +73,9 @@ final class KRV_MAX_Autopost {
         if (!wp_next_scheduled(self::CRON_HOOK)) {
             wp_schedule_event(time() + 60, self::CRON_SCHEDULE, self::CRON_HOOK);
         }
+
+        update_option(self::VER_OPT, self::VERSION, false);
+        update_option(self::CUTOFF_OPT, time(), false);
     }
 
     public static function deactivate(): void {
@@ -74,6 +84,18 @@ final class KRV_MAX_Autopost {
     }
 
     /* ================= SETTINGS ================= */
+
+
+    private static function maybe_handle_upgrade(): void {
+        $stored = (string)get_option(self::VER_OPT, '');
+        if ($stored === self::VERSION) {
+            return;
+        }
+
+        update_option(self::VER_OPT, self::VERSION, false);
+        update_option(self::CUTOFF_OPT, time(), false);
+    }
+
 
     private static function defaults(): array {
         return [
@@ -170,7 +192,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.5.1</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.5.2</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -406,7 +428,9 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         update_post_meta($post_id,self::META_STATUS,'queued');
         delete_post_meta($post_id,self::META_ERROR);
         update_post_meta($post_id,self::META_ATTEMPTS,0);
-        update_post_meta($post_id,self::META_NEXTTRY,time());
+        $now = time();
+        update_post_meta($post_id,self::META_NEXTTRY,$now);
+        update_post_meta($post_id,self::META_QUEUEDAT,$now);
         self::log('queue',0,$post_id,$why ?: 'queued');
     }
 
@@ -438,6 +462,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         set_transient(self::CRON_LOCK_KEY, 1, 55);
 
         $now = time();
+        $cutoff = (int)get_option(self::CUTOFF_OPT, 0);
 
         $q = new WP_Query([
             'post_type'=>self::supported_post_types(),'post_status'=>'publish','posts_per_page'=>self::BATCH_LIMIT,
@@ -449,6 +474,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                     ['key'=>self::META_NEXTTRY,'compare'=>'NOT EXISTS'],
                     ['key'=>self::META_NEXTTRY,'value'=>$now,'type'=>'NUMERIC','compare'=>'<='],
                 ],
+                ['key'=>self::META_QUEUEDAT,'value'=>$cutoff,'type'=>'NUMERIC','compare'=>'>='],
             ],
         ]);
 
@@ -461,6 +487,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 delete_post_meta($post_id,self::META_ERROR);
                 delete_post_meta($post_id,self::META_ATTEMPTS);
                 delete_post_meta($post_id,self::META_NEXTTRY);
+                delete_post_meta($post_id,self::META_QUEUEDAT);
                 continue;
             }
 
@@ -561,8 +588,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         ]);
 
         foreach ($posts as $p) {
-            update_post_meta((int)$p->ID,self::META_STATUS,'queued');
-            update_post_meta((int)$p->ID,self::META_NEXTTRY,time());
+            self::queue_post((int)$p->ID,'Requeue error');
         }
 
         self::trigger_queue_worker();

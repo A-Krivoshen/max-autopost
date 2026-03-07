@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.2
+- Added upgrade queue cutoff to prevent immediate flood of old queued items after plugin update.
+- Requeueing now refreshes queue metadata and safely re-enables sending.
+
 ## 1.5.1
 - Reworked checkboxes to select post types (including custom post types) instead of meta fields.
 - Separated support contact block from referral banner in admin UI.
