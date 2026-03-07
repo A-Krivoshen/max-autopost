@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.0
+- Added checkbox-based custom field selection in admin settings.
+- Embedded referral banner widget and support contact block in admin page.
+
 ## 1.4.1
 - Improved queue auto-start reliability by triggering worker immediately after queueing.
 - Added explicit handling for scheduled publications (`future -> publish`).

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.4.1
+ * Version: 1.5.0
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -83,6 +83,7 @@ final class KRV_MAX_Autopost {
             'add_button'    => 1,
             'button_text'   => 'Читать',
             'publish_custom_fields' => 0,
+            'custom_fields_selected'=> [],
             'custom_fields_map'     => '',
             'notify'        => 1,
             'debug'         => 0,
@@ -118,6 +119,11 @@ final class KRV_MAX_Autopost {
         if ($out['button_text'] === '') $out['button_text'] = $d['button_text'];
 
         $out['publish_custom_fields'] = !empty($in['publish_custom_fields']) ? 1 : 0;
+
+        $selected = isset($in['custom_fields_selected']) && is_array($in['custom_fields_selected']) ? $in['custom_fields_selected'] : [];
+        $selected = array_values(array_unique(array_filter(array_map(static fn($k) => sanitize_key((string)$k), $selected))));
+        $out['custom_fields_selected'] = $selected;
+
         $out['custom_fields_map'] = isset($in['custom_fields_map']) ? sanitize_textarea_field((string)$in['custom_fields_map']) : $d['custom_fields_map'];
 
         $out['notify'] = !empty($in['notify']) ? 1 : 0;
@@ -160,7 +166,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.4.1</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.5.0</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -171,6 +177,17 @@ final class KRV_MAX_Autopost {
         elseif ($tab === 'queue') self::tab_queue();
         else self::tab_logs();
 
+        self::render_support_block();
+        echo '</div>';
+    }
+
+
+    private static function render_support_block(): void {
+        echo '<hr style="margin:22px 0 16px;">';
+        echo '<div style="max-width:980px;background:#fff;border:1px solid #dcdcde;padding:14px;">';
+        echo '<p style="margin-top:0;font-size:14px;"><strong>По всем вопросам пишите:</strong> <a href="mailto:aleksey@krivoshein.site">aleksey@krivoshein.site</a></p>';
+        echo '<script src="//wpwidget.ru/js/wps-widget-entry.min.js" async></script>';
+        echo '<div class="wps-widget" data-w="//wpwidget.ru/greetings?orientation=3&pid=11291"></div>';
         echo '</div>';
     }
 
@@ -198,10 +215,25 @@ final class KRV_MAX_Autopost {
         echo '<p class="description">inline_keyboard идёт <strong>вторым attachment</strong> (после image, если он есть).</p>';
         echo '</td></tr>';
 
+        $selected_fields = isset($s['custom_fields_selected']) && is_array($s['custom_fields_selected']) ? $s['custom_fields_selected'] : [];
+        $available_fields = self::collect_available_custom_fields($selected_fields);
+
         echo '<tr><th>Кастомные поля</th><td>';
         echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[publish_custom_fields]" value="1" '.checked((int)$s['publish_custom_fields'],1,false).'> Публиковать значения выбранных полей</label>';
-        echo '<textarea name="'.esc_attr(self::OPT).'[custom_fields_map]" class="large-text code" rows="5" placeholder="price|Цена\nsku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>';
-        echo '<p class="description">По одному полю на строку: <code>meta_key|Подпись</code> или только <code>meta_key</code>. Непустые значения добавляются в конец текста публикации.</p>';
+
+        if (!empty($available_fields)) {
+            echo '<div style="margin:10px 0;padding:10px;border:1px solid #ccd0d4;max-height:180px;overflow:auto;background:#fff;">';
+            foreach ($available_fields as $key) {
+                $checked = in_array($key, $selected_fields, true) ? ' checked="checked"' : '';
+                echo '<label style="display:block;margin:0 0 6px;"><input type="checkbox" name="'.esc_attr(self::OPT).'[custom_fields_selected][]" value="'.esc_attr($key).'"'.$checked.'> '.esc_html($key).'</label>';
+            }
+            echo '</div>';
+        } else {
+            echo '<p class="description">Кастомные поля пока не найдены. Создайте meta-поля в материалах, сохраните запись и обновите страницу настроек.</p>';
+        }
+
+        echo '<textarea name="'.esc_attr(self::OPT).'[custom_fields_map]" class="large-text code" rows="4" placeholder="price|Цена\nsku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>';
+        echo '<p class="description">Подписи для выбранных полей (необязательно): по строке <code>meta_key|Подпись</code>. Если подписи нет — выводится только значение.</p>';
         echo '</td></tr>';
 
         echo '<tr><th>Notify</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[notify]" value="1" '.checked((int)$s['notify'],1,false).'> notify=true</label></td></tr>';
@@ -827,6 +859,63 @@ final class KRV_MAX_Autopost {
     }
 
 
+
+    private static function collect_available_custom_fields(array $selected = []): array {
+        global $wpdb;
+
+        $post_types = self::supported_post_types();
+        if (empty($post_types)) {
+            return $selected;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($post_types), '%s'));
+        $sql = "SELECT DISTINCT pm.meta_key
+                FROM {$wpdb->postmeta} pm
+                INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+                WHERE p.post_type IN ($placeholders)
+                  AND pm.meta_key NOT LIKE %s
+                ORDER BY pm.meta_key ASC
+                LIMIT 200";
+
+        $args = array_merge($post_types, ['\_%']);
+        $keys = $wpdb->get_col($wpdb->prepare($sql, ...$args));
+        $keys = is_array($keys) ? array_map(static fn($k) => sanitize_key((string)$k), $keys) : [];
+
+        $keys = array_values(array_unique(array_filter($keys)));
+        foreach ($selected as $k) {
+            $k = sanitize_key((string)$k);
+            if ($k !== '' && !in_array($k, $keys, true)) {
+                $keys[] = $k;
+            }
+        }
+
+        sort($keys, SORT_STRING);
+        return $keys;
+    }
+
+    private static function configured_custom_fields(array $settings): array {
+        $labels = [];
+        foreach (self::parse_custom_fields_map((string)($settings['custom_fields_map'] ?? '')) as $row) {
+            $labels[$row['key']] = $row['label'];
+        }
+
+        $selected = isset($settings['custom_fields_selected']) && is_array($settings['custom_fields_selected'])
+            ? $settings['custom_fields_selected']
+            : [];
+        $selected = array_values(array_unique(array_filter(array_map(static fn($k) => sanitize_key((string)$k), $selected))));
+
+        $out = [];
+        if (!empty($selected)) {
+            foreach ($selected as $key) {
+                $out[] = ['key' => $key, 'label' => $labels[$key] ?? ''];
+            }
+            return $out;
+        }
+
+        // backward compatibility with old map-only configuration
+        return self::parse_custom_fields_map((string)($settings['custom_fields_map'] ?? ''));
+    }
+
     private static function build_text(int $post_id, array $settings): string {
         $override = trim((string)get_post_meta($post_id,self::META_OVERRIDE,true));
         $override = str_replace(["\r\n","\r"], "\n", $override);
@@ -850,7 +939,7 @@ final class KRV_MAX_Autopost {
             return self::limit_text($text);
         }
 
-        $fields = self::parse_custom_fields_map((string)($settings['custom_fields_map'] ?? ''));
+        $fields = self::configured_custom_fields($settings);
         if (empty($fields)) {
             return self::limit_text($text);
         }
