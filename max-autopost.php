@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.7.4
+ * Version: 1.7.7
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -16,7 +16,7 @@ final class KRV_MAX_Autopost {
     private const VER_OPT = 'krv_max_autopost_ver';
     private const CUTOFF_OPT = 'krv_max_autopost_queue_cutoff';
 
-    private const VERSION = '1.7.4';
+    private const VERSION = '1.7.7';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -32,7 +32,8 @@ final class KRV_MAX_Autopost {
     private const CRON_SCHEDULE = 'krv_max_minute';
     private const CRON_LOCK_KEY = 'krv_max_autopost_lock';
 
-    private const MAX_TEXT    = 3900;
+    private const MIN_TEXT   = 200;
+    private const MAX_TEXT   = 3900;
     private const BATCH_LIMIT = 1;
     private const LOG_LIMIT   = 50;
 
@@ -102,6 +103,7 @@ final class KRV_MAX_Autopost {
             'token'         => '',
             'chat_id'       => '',
             'include_image' => 1,
+            'image_source_mode' => 'post_or_site',
             'add_button'    => 1,
             'button_text'   => 'Читать',
             'max_text_limit' => self::MAX_TEXT,
@@ -136,15 +138,17 @@ final class KRV_MAX_Autopost {
         $out['chat_id'] = isset($in['chat_id']) ? trim((string)$in['chat_id']) : $d['chat_id'];
 
         $out['include_image'] = !empty($in['include_image']) ? 1 : 0;
+
+        $mode = isset($in['image_source_mode']) ? sanitize_key((string)$in['image_source_mode']) : (string)$d['image_source_mode'];
+        $out['image_source_mode'] = self::normalize_image_source_mode($mode);
+
         $out['add_button']    = !empty($in['add_button']) ? 1 : 0;
 
         $out['button_text'] = isset($in['button_text']) ? sanitize_text_field((string)$in['button_text']) : $d['button_text'];
         if ($out['button_text'] === '') $out['button_text'] = $d['button_text'];
 
         $text_limit = isset($in['max_text_limit']) ? (int)$in['max_text_limit'] : (int)$d['max_text_limit'];
-        if ($text_limit < 200) $text_limit = 200;
-        if ($text_limit > self::MAX_TEXT) $text_limit = self::MAX_TEXT;
-        $out['max_text_limit'] = $text_limit;
+        $out['max_text_limit'] = self::normalize_text_limit($text_limit);
 
         $out['publish_custom_fields'] = !empty($in['publish_custom_fields']) ? 1 : 0;
 
@@ -198,7 +202,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.7.4</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.7.7</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -246,7 +250,19 @@ final class KRV_MAX_Autopost {
 
         echo '<tr><th>Chat ID</th><td><input type="text" class="regular-text" name="'.esc_attr(self::OPT).'[chat_id]" value="'.esc_attr($s['chat_id']).'"></td></tr>';
 
-        echo '<tr><th>Картинка</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[include_image]" value="1" '.checked((int)$s['include_image'],1,false).'> Включить изображение</label></td></tr>';
+        echo '<tr><th>Картинка</th><td>';
+        echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[include_image]" value="1" '.checked((int)$s['include_image'],1,false).'> Включить изображение</label>';
+        echo '<div style="margin-top:8px;">';
+        echo '<label>Источник изображения: ';
+        echo '<select name="'.esc_attr(self::OPT).'[image_source_mode]">';
+        echo '<option value="post_or_site" '.selected((string)$s['image_source_mode'], 'post_or_site', false).'>Из новости, иначе изображение сайта</option>';
+        echo '<option value="post_only" '.selected((string)$s['image_source_mode'], 'post_only', false).'>Только изображение новости (без подмены)</option>';
+        echo '<option value="site_only" '.selected((string)$s['image_source_mode'], 'site_only', false).'>Всегда изображение сайта</option>';
+        echo '</select>';
+        echo '</label>';
+        echo '</div>';
+        echo '<p class="description">Можно отключить подстановку изображения сайта, если у записи нет своей картинки.</p>';
+        echo '</td></tr>';
 
         echo '<tr><th>Кнопка</th><td>';
         echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_button]" value="1" '.checked((int)$s['add_button'],1,false).'> Включить кнопку “Читать”</label><br>';
@@ -255,8 +271,8 @@ final class KRV_MAX_Autopost {
         echo '</td></tr>';
 
         echo '<tr><th>Длина текста</th><td>';
-        echo '<input type="number" min="200" max="'.esc_attr((string)self::MAX_TEXT).'" step="1" name="'.esc_attr(self::OPT).'[max_text_limit]" value="'.esc_attr((string)(int)$s['max_text_limit']).'" style="width:130px;">';
-        echo '<p class="description">Максимальная длина текста для MAX: от 200 до '.esc_html((string)self::MAX_TEXT).' символов.</p>';
+        echo '<input type="number" min="'.esc_attr((string)self::MIN_TEXT).'" max="'.esc_attr((string)self::MAX_TEXT).'" step="1" name="'.esc_attr(self::OPT).'[max_text_limit]" value="'.esc_attr((string)(int)$s['max_text_limit']).'" style="width:130px;">';
+        echo '<p class="description">Максимальная длина текста для MAX: от '.esc_html((string)self::MIN_TEXT).' до '.esc_html((string)self::MAX_TEXT).' символов.</p>';
         echo '</td></tr>';
 
         $post_types = self::available_post_types();
@@ -521,49 +537,58 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $now = time();
         $cutoff = (int)get_option(self::CUTOFF_OPT, 0);
 
-        $q = new WP_Query([
-            'post_type'=>self::supported_post_types(),'post_status'=>'publish','posts_per_page'=>self::BATCH_LIMIT,
-            'orderby'=>'meta_value_num','meta_key'=>self::META_NEXTTRY,'order'=>'ASC',
-            'meta_query'=>[
-                ['key'=>self::META_STATUS,'value'=>'queued'],
-                [
-                    'relation'=>'OR',
-                    ['key'=>self::META_NEXTTRY,'compare'=>'NOT EXISTS'],
-                    ['key'=>self::META_NEXTTRY,'value'=>$now,'type'=>'NUMERIC','compare'=>'<='],
+        try {
+            $q = new WP_Query([
+                'post_type'=>self::supported_post_types(),
+                'post_status'=>'publish',
+                'posts_per_page'=>self::BATCH_LIMIT,
+                'orderby'=>'meta_value_num',
+                'meta_key'=>self::META_NEXTTRY,
+                'order'=>'ASC',
+                'no_found_rows'=>true,
+                'update_post_meta_cache'=>false,
+                'update_post_term_cache'=>false,
+                'meta_query'=>[
+                    ['key'=>self::META_STATUS,'value'=>'queued'],
+                    [
+                        'relation'=>'OR',
+                        ['key'=>self::META_NEXTTRY,'compare'=>'NOT EXISTS'],
+                        ['key'=>self::META_NEXTTRY,'value'=>$now,'type'=>'NUMERIC','compare'=>'<='],
+                    ],
+                    ['key'=>self::META_QUEUEDAT,'value'=>$cutoff,'type'=>'NUMERIC','compare'=>'>='],
                 ],
-                ['key'=>self::META_QUEUEDAT,'value'=>$cutoff,'type'=>'NUMERIC','compare'=>'>='],
-            ],
-        ]);
+            ]);
 
-        foreach ($q->posts as $p) {
-            $post_id = (int)$p->ID;
-            $res = self::send($post_id);
+            foreach ($q->posts as $p) {
+                $post_id = (int)$p->ID;
+                $res = self::send($post_id);
 
-            if ($res === true) {
-                update_post_meta($post_id,self::META_STATUS,'sent');
-                delete_post_meta($post_id,self::META_ERROR);
-                delete_post_meta($post_id,self::META_ATTEMPTS);
-                delete_post_meta($post_id,self::META_NEXTTRY);
-                delete_post_meta($post_id,self::META_QUEUEDAT);
-                continue;
+                if ($res === true) {
+                    update_post_meta($post_id,self::META_STATUS,'sent');
+                    delete_post_meta($post_id,self::META_ERROR);
+                    delete_post_meta($post_id,self::META_ATTEMPTS);
+                    delete_post_meta($post_id,self::META_NEXTTRY);
+                    delete_post_meta($post_id,self::META_QUEUEDAT);
+                    continue;
+                }
+
+                $attempts = (int)get_post_meta($post_id,self::META_ATTEMPTS,true);
+                $attempts++;
+                update_post_meta($post_id,self::META_ATTEMPTS,$attempts);
+                update_post_meta($post_id,self::META_ERROR,(string)$res);
+
+                $delay = self::retry_delay($attempts);
+                if ($delay === null) {
+                    update_post_meta($post_id,self::META_STATUS,'error');
+                    update_post_meta($post_id,self::META_NEXTTRY,0);
+                } else {
+                    update_post_meta($post_id,self::META_STATUS,'queued');
+                    update_post_meta($post_id,self::META_NEXTTRY,$now + $delay);
+                }
             }
-
-            $attempts = (int)get_post_meta($post_id,self::META_ATTEMPTS,true);
-            $attempts++;
-            update_post_meta($post_id,self::META_ATTEMPTS,$attempts);
-            update_post_meta($post_id,self::META_ERROR,(string)$res);
-
-            $delay = self::retry_delay($attempts);
-            if ($delay === null) {
-                update_post_meta($post_id,self::META_STATUS,'error');
-                update_post_meta($post_id,self::META_NEXTTRY,0);
-            } else {
-                update_post_meta($post_id,self::META_STATUS,'queued');
-                update_post_meta($post_id,self::META_NEXTTRY,$now + $delay);
-            }
+        } finally {
+            delete_transient(self::CRON_LOCK_KEY);
         }
-
-        delete_transient(self::CRON_LOCK_KEY);
     }
 
     private static function retry_delay(int $attempt): ?int {
@@ -590,15 +615,18 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $payload = ['text'=>"MAX Autopost: тест\n\n".home_url('/'),'notify'=>(bool)$s['notify']];
         $attachments = [];
 
-        // Optional image (site icon)
+        // Optional image for test message
         if (!empty($s['include_image']) && function_exists('curl_init')) {
-            $site_icon = (int)get_option('site_icon');
-            if ($site_icon) {
-                $file = get_attached_file($site_icon);
-                if (is_string($file) && $file && file_exists($file)) {
-                    $up = self::upload($file, $token, 0);
-                    if ($up !== false) {
-                        $attachments[] = ['type'=>'image','payload'=>$up];
+            $mode = (string)($s['image_source_mode'] ?? 'post_or_site');
+            if (self::normalize_image_source_mode($mode) !== 'post_only') {
+                $site_icon = (int)get_option('site_icon');
+                if ($site_icon) {
+                    $file = get_attached_file($site_icon);
+                    if (is_string($file) && $file && file_exists($file)) {
+                        $up = self::upload($file, $token, 0);
+                        if ($up !== false) {
+                            $attachments[] = ['type'=>'image','payload'=>$up];
+                        }
                     }
                 }
             }
@@ -777,7 +805,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         // IMAGE first
         if (!empty($s['include_image']) && function_exists('curl_init')) {
-            $file = self::resolve_image_file($post_id);
+            $file = self::resolve_image_file($post_id, $s);
             if ($file) {
                 $up = self::upload($file, $token, $post_id);
                 if ($up === false) return 'Upload failed (see logs)';
@@ -1037,6 +1065,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     /* ================= HELPERS ================= */
     private static function supported_post_types(): array {
+        static $cache = null;
+        if (is_array($cache)) {
+            return $cache;
+        }
+
         $s = self::get_settings();
         $types = isset($s['enabled_post_types']) && is_array($s['enabled_post_types']) ? $s['enabled_post_types'] : [];
         $types = array_values(array_unique(array_filter(array_map(static fn($k) => sanitize_key((string)$k), $types))));
@@ -1044,13 +1077,19 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $allowed = array_keys(self::available_post_types());
         $types = array_values(array_intersect($types, $allowed));
 
-        return !empty($types) ? $types : ['post'];
+        $cache = !empty($types) ? $types : ['post'];
+        return $cache;
     }
 
     private static function is_supported_post_type(string $post_type): bool {
         return in_array($post_type, self::supported_post_types(), true);
     }
     private static function available_post_types(): array {
+        static $cache = null;
+        if (is_array($cache)) {
+            return $cache;
+        }
+
         $objs = get_post_types([
             'public' => true,
             'show_ui' => true,
@@ -1067,9 +1106,19 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         if (!isset($out['post'])) $out['post'] = 'Записи';
-        return $out;
+        $cache = $out;
+        return $cache;
     }
 
+    private static function normalize_image_source_mode(string $mode): string {
+        return in_array($mode, ['post_or_site', 'post_only', 'site_only'], true) ? $mode : 'post_or_site';
+    }
+
+    private static function normalize_text_limit(int $limit): int {
+        if ($limit < self::MIN_TEXT) return self::MIN_TEXT;
+        if ($limit > self::MAX_TEXT) return self::MAX_TEXT;
+        return $limit;
+    }
 
     private static function build_text(int $post_id, array $settings): string {
         $override = trim((string)get_post_meta($post_id,self::META_OVERRIDE,true));
@@ -1083,9 +1132,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             : wp_strip_all_tags(strip_shortcodes((string)get_post_field('post_content',$post_id)));
 
         $excerpt = trim(preg_replace('/\s+/', ' ', (string)$excerpt));
-        $max = isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT;
-        if ($max < 200) $max = 200;
-        if ($max > self::MAX_TEXT) $max = self::MAX_TEXT;
+        $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
         $word_limit = max(20, min(300, (int)floor($max / 8)));
         $excerpt = wp_trim_words($excerpt, $word_limit, '…');
 
@@ -1153,9 +1200,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     private static function limit_text(string $text, array $settings): string {
         $text = trim($text);
-        $max = isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT;
-        if ($max < 200) $max = 200;
-        if ($max > self::MAX_TEXT) $max = self::MAX_TEXT;
+        $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
 
         if (mb_strlen($text, 'UTF-8') > $max) {
             $text = rtrim(mb_substr($text, 0, max(1, $max - 1), 'UTF-8')) . '…';
@@ -1164,27 +1209,33 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return $text;
     }
 
-    private static function resolve_image_file(int $post_id): ?string {
-        $thumb_id = (int)get_post_thumbnail_id($post_id);
-        if ($thumb_id) {
-            $file = get_attached_file($thumb_id);
-            if (is_string($file) && $file && file_exists($file)) return $file;
-        }
+    private static function resolve_image_file(int $post_id, array $settings): ?string {
+        $mode = self::normalize_image_source_mode((string)($settings['image_source_mode'] ?? 'post_or_site'));
 
-        $content = (string)get_post_field('post_content', $post_id);
-        if ($content && preg_match('/<img[^>]+src=["\']([^"\']+)["\']/i', $content, $m)) {
-            $src = (string)$m[1];
-            $u = wp_upload_dir();
-            if (!empty($u['baseurl']) && !empty($u['basedir']) && str_starts_with($src, (string)$u['baseurl'])) {
-                $path = wp_normalize_path(str_replace((string)$u['baseurl'], (string)$u['basedir'], $src));
-                if (file_exists($path)) return $path;
+        if ($mode !== 'site_only') {
+            $thumb_id = (int)get_post_thumbnail_id($post_id);
+            if ($thumb_id) {
+                $file = get_attached_file($thumb_id);
+                if (is_string($file) && $file && file_exists($file)) return $file;
+            }
+
+            $content = (string)get_post_field('post_content', $post_id);
+            if ($content && preg_match('/<img[^>]+src=["\']([^"\']+)["\']/i', $content, $m)) {
+                $src = (string)$m[1];
+                $u = wp_upload_dir();
+                if (!empty($u['baseurl']) && !empty($u['basedir']) && str_starts_with($src, (string)$u['baseurl'])) {
+                    $path = wp_normalize_path(str_replace((string)$u['baseurl'], (string)$u['basedir'], $src));
+                    if (file_exists($path)) return $path;
+                }
             }
         }
 
-        $site_icon_id = (int)get_option('site_icon');
-        if ($site_icon_id) {
-            $file = get_attached_file($site_icon_id);
-            if (is_string($file) && $file && file_exists($file)) return $file;
+        if ($mode !== 'post_only') {
+            $site_icon_id = (int)get_option('site_icon');
+            if ($site_icon_id) {
+                $file = get_attached_file($site_icon_id);
+                if (is_string($file) && $file && file_exists($file)) return $file;
+            }
         }
 
         return null;

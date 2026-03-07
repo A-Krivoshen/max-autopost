@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.7
+- Refactored repeated normalization logic into dedicated helpers for text limit and image source mode.
+- Optimized queue worker query (`no_found_rows`, reduced cache work) and guaranteed lock release via `finally`.
+- Added request-local caching for available/supported post types.
+
+## 1.7.6
+- Added image source mode setting: post image first with site fallback, post-only (no fallback), or site-only.
+- Prevented automatic site-image substitution when post-only mode is selected.
+
+## 1.7.5
+- Removed remaining screenshot-oriented guidance from the Help tab flow; help content is text-only with Chat ID discovery table.
+
 ## 1.7.4
 - Improved text truncation at character limit: now appends an ellipsis instead of hard cut-off.
 - Switched length/truncation checks to explicit UTF-8 handling for safer multilingual text processing.
