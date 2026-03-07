@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.6.2
+Stable tag: 1.7.0
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.7.0 =
+* Добавлена настройка максимальной длины текста публикации в MAX.
+* Диапазон лимита: от 200 до 3900 символов.
+
 = 1.6.2 =
 * Удалён первый скриншот из вкладки «Техпомощь» по запросу.
 * Оставлены два скриншота-подсказки (добавление бота и поиск Chat ID).

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.6.2
+ * Version: 1.7.0
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -16,7 +16,7 @@ final class KRV_MAX_Autopost {
     private const VER_OPT = 'krv_max_autopost_ver';
     private const CUTOFF_OPT = 'krv_max_autopost_queue_cutoff';
 
-    private const VERSION = '1.6.2';
+    private const VERSION = '1.7.0';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -104,6 +104,7 @@ final class KRV_MAX_Autopost {
             'include_image' => 1,
             'add_button'    => 1,
             'button_text'   => 'Читать',
+            'max_text_limit' => self::MAX_TEXT,
             'publish_custom_fields' => 0,
             'enabled_post_types'    => ['post'],
             'custom_fields_map'     => '',
@@ -139,6 +140,11 @@ final class KRV_MAX_Autopost {
 
         $out['button_text'] = isset($in['button_text']) ? sanitize_text_field((string)$in['button_text']) : $d['button_text'];
         if ($out['button_text'] === '') $out['button_text'] = $d['button_text'];
+
+        $text_limit = isset($in['max_text_limit']) ? (int)$in['max_text_limit'] : (int)$d['max_text_limit'];
+        if ($text_limit < 200) $text_limit = 200;
+        if ($text_limit > self::MAX_TEXT) $text_limit = self::MAX_TEXT;
+        $out['max_text_limit'] = $text_limit;
 
         $out['publish_custom_fields'] = !empty($in['publish_custom_fields']) ? 1 : 0;
 
@@ -192,7 +198,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.6.2</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.7.0</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -246,6 +252,11 @@ final class KRV_MAX_Autopost {
         echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_button]" value="1" '.checked((int)$s['add_button'],1,false).'> Включить кнопку “Читать”</label><br>';
         echo '<input type="text" name="'.esc_attr(self::OPT).'[button_text]" value="'.esc_attr($s['button_text']).'" style="width:220px;">';
         echo '<p class="description">inline_keyboard идёт <strong>вторым attachment</strong> (после image, если он есть).</p>';
+        echo '</td></tr>';
+
+        echo '<tr><th>Длина текста</th><td>';
+        echo '<input type="number" min="200" max="'.esc_attr((string)self::MAX_TEXT).'" step="1" name="'.esc_attr(self::OPT).'[max_text_limit]" value="'.esc_attr((string)(int)$s['max_text_limit']).'" style="width:130px;">';
+        echo '<p class="description">Максимальная длина текста для MAX: от 200 до '.esc_html((string)self::MAX_TEXT).' символов.</p>';
         echo '</td></tr>';
 
         $post_types = self::available_post_types();
@@ -1089,12 +1100,12 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     private static function append_custom_fields(string $text, int $post_id, array $settings): string {
         if (empty($settings['publish_custom_fields'])) {
-            return self::limit_text($text);
+            return self::limit_text($text, $settings);
         }
 
         $fields = self::parse_custom_fields_map((string)($settings['custom_fields_map'] ?? ''));
         if (empty($fields)) {
-            return self::limit_text($text);
+            return self::limit_text($text, $settings);
         }
 
         $lines = [];
@@ -1112,10 +1123,10 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         if (empty($lines)) {
-            return self::limit_text($text);
+            return self::limit_text($text, $settings);
         }
 
-        return self::limit_text($text . "\n\n" . implode("\n", $lines));
+        return self::limit_text($text . "\n\n" . implode("\n", $lines), $settings);
     }
 
     private static function parse_custom_fields_map(string $map): array {
@@ -1145,9 +1156,12 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return $result;
     }
 
-    private static function limit_text(string $text): string {
+    private static function limit_text(string $text, array $settings): string {
         $text = trim($text);
-        if (mb_strlen($text) > self::MAX_TEXT) $text = mb_substr($text, 0, self::MAX_TEXT);
+        $max = isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT;
+        if ($max < 200) $max = 200;
+        if ($max > self::MAX_TEXT) $max = self::MAX_TEXT;
+        if (mb_strlen($text) > $max) $text = mb_substr($text, 0, $max);
         return $text;
     }
 

@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.7.0
+- Added configurable MAX post text length limit in admin settings (200..3900).
+
 ## 1.6.2
 - Removed the first Help screenshot as requested; kept only two guidance images.
 
