@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650">
+  <rect width="1200" height="650" fill="#f8fafc"/>
+  <rect x="70" y="70" width="1060" height="510" rx="24" fill="#ffffff" stroke="#d1d5db"/>
+  <text x="100" y="140" font-family="Arial" font-size="38" fill="#111827" font-weight="700">Шаг 3. Найдите Chat ID во вкладке «Техпомощь»</text>
+  <text x="100" y="190" font-family="Arial" font-size="26" fill="#374151">После тестового сообщения плагин покажет список доступных чатов.</text>
+  <rect x="120" y="245" width="960" height="280" rx="12" fill="#ffffff" stroke="#9ca3af"/>
+  <rect x="120" y="245" width="960" height="54" fill="#f3f4f6"/>
+  <text x="145" y="280" font-family="Arial" font-size="24" fill="#111827" font-weight="700">Chat ID</text>
+  <text x="445" y="280" font-family="Arial" font-size="24" fill="#111827" font-weight="700">Название</text>
+  <text x="840" y="280" font-family="Arial" font-size="24" fill="#111827" font-weight="700">Тип</text>
+  <text x="145" y="340" font-family="Arial" font-size="24" fill="#111827">-70915601402400</text>
+  <text x="445" y="340" font-family="Arial" font-size="24" fill="#111827">Drslon_Channel</text>
+  <text x="840" y="340" font-family="Arial" font-size="24" fill="#111827">channel</text>
+  <rect x="120" y="430" width="370" height="58" rx="10" fill="#111827"/>
+  <text x="150" y="468" font-family="Arial" font-size="24" fill="#fff">Скопируйте Chat ID в настройки</text>
+</svg>

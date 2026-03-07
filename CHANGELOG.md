@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.2
+- Removed the first Help screenshot as requested; kept only two guidance images.
+
+## 1.6.1
+- Added embedded visual guide screenshots to the Help tab for token, bot/group setup, and Chat ID discovery.
+- Included local help assets shown directly in admin panel.
+
 ## 1.6.0
 - Added dedicated "Help" admin tab with guided setup steps for bot creation, group setup, and Chat ID discovery.
 - Added token-based chat discovery to display available Chat IDs directly in admin panel.

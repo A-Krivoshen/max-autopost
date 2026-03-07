@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.6.0
+Stable tag: 1.6.2
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,14 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.6.2 =
+* Удалён первый скриншот из вкладки «Техпомощь» по запросу.
+* Оставлены два скриншота-подсказки (добавление бота и поиск Chat ID).
+
+= 1.6.1 =
+* На вкладке «Техпомощь» добавлены встроенные скриншоты-подсказки по шагам настройки.
+* Скриншоты отображаются прямо в админке плагина.
+
 = 1.6.0 =
 * Добавлена вкладка «Техпомощь» с инструкцией по токену/боту/группе и поиску Chat ID.
 * При наличии Token плагин показывает найденные Chat ID автоматически через API MAX.

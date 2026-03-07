@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.6.0
+ * Version: 1.6.2
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -16,7 +16,7 @@ final class KRV_MAX_Autopost {
     private const VER_OPT = 'krv_max_autopost_ver';
     private const CUTOFF_OPT = 'krv_max_autopost_queue_cutoff';
 
-    private const VERSION = '1.6.0';
+    private const VERSION = '1.6.2';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -192,7 +192,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.6.0</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.6.2</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -403,6 +403,15 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 }
             }
         }
+
+        echo '<h3>Скриншоты-подсказки</h3>';
+        $img2 = plugins_url('assets/help/step2.svg', __FILE__);
+        $img3 = plugins_url('assets/help/step3.svg', __FILE__);
+
+        echo '<div style="display:grid;grid-template-columns:1fr;gap:14px;max-width:940px;">';
+        echo '<figure style="margin:0;padding:10px;border:1px solid #dcdcde;background:#fff;"><img src="'.esc_url($img2).'" alt="Шаг 1: добавить бота в группу" style="width:100%;height:auto;"><figcaption style="margin-top:8px;">1) Добавьте бота в целевую группу/канал и выдайте права.</figcaption></figure>';
+        echo '<figure style="margin:0;padding:10px;border:1px solid #dcdcde;background:#fff;"><img src="'.esc_url($img3).'" alt="Шаг 2: найти chat id" style="width:100%;height:auto;"><figcaption style="margin-top:8px;">2) Найдите Chat ID на этой вкладке и вставьте в настройки.</figcaption></figure>';
+        echo '</div>';
 
         echo '<h3>Контакты</h3>';
         echo '<p>По всем вопросам: <a href="mailto:aleksey@krivoshein.site">aleksey@krivoshein.site</a>.</p>';
