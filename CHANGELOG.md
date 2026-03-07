@@ -1,8 +1,5 @@
 # Changelog
 
-## 1.7.5
-- Removed remaining screenshot-oriented guidance from the Help tab flow; help content is text-only with Chat ID discovery table.
-
 ## 1.7.4
 - Improved text truncation at character limit: now appends an ellipsis instead of hard cut-off.
 - Switched length/truncation checks to explicit UTF-8 handling for safer multilingual text processing.

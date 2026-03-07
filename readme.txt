@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.7.5
+Stable tag: 1.7.4
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,9 +31,6 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
-= 1.7.5 =
-* Во вкладке «Техпомощь» убраны любые блоки со скриншотами; оставлены только текстовые шаги и найденные Chat ID.
-
 = 1.7.4 =
 * Улучшено обрезание длинного текста: при срабатывании лимита теперь добавляется многоточие.
 * Для определения длины используется явная UTF-8 обработка, чтобы избежать некорректного усечения мультибайтового текста.
