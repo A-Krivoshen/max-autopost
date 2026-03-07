@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.5
+- Removed remaining screenshot-oriented guidance from the Help tab flow; help content is text-only with Chat ID discovery table.
+
+## 1.7.4
+- Improved text truncation at character limit: now appends an ellipsis instead of hard cut-off.
+- Switched length/truncation checks to explicit UTF-8 handling for safer multilingual text processing.
+
+## 1.7.3
+- Reduced automatic queue batch size from 5 to 1 to prevent burst sends.
+- Made excerpt length dynamic based on configured text limit for more predictable output size.
+
+## 1.7.2
+- Removed Help tab screenshots completely; kept text instructions and Chat ID discovery only.
+
 ## 1.7.1
 - Replaced Help tab screenshots with updated visuals matching user-provided references.
 

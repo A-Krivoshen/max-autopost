@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.7.1
+ * Version: 1.7.5
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -16,7 +16,7 @@ final class KRV_MAX_Autopost {
     private const VER_OPT = 'krv_max_autopost_ver';
     private const CUTOFF_OPT = 'krv_max_autopost_queue_cutoff';
 
-    private const VERSION = '1.7.1';
+    private const VERSION = '1.7.5';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -33,7 +33,7 @@ final class KRV_MAX_Autopost {
     private const CRON_LOCK_KEY = 'krv_max_autopost_lock';
 
     private const MAX_TEXT    = 3900;
-    private const BATCH_LIMIT = 5;
+    private const BATCH_LIMIT = 1;
     private const LOG_LIMIT   = 50;
 
     // Retry backoff (attempt 1..N). After last element -> error.
@@ -198,7 +198,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.7.1</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.7.5</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -381,7 +381,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<div style="max-width:980px;background:#fff;border:1px solid #dcdcde;padding:16px;margin-top:14px;">';
         echo '<h2 style="margin-top:0;">Как получить Token и Chat ID для MAX</h2>';
         echo '<ol style="line-height:1.6;">';
-        echo '<li>Создайте чат-бота в MAX для партнёров (как на скриншоте: раздел <strong>Чат-бот и мини-приложение</strong>).</li>';
+        echo '<li>Создайте чат-бота в MAX для партнёров (раздел <strong>Чат-бот и мини-приложение</strong>).</li>';
         echo '<li>В разделе <strong>Интеграция</strong> получите токен и вставьте его в настройку <strong>Token</strong> плагина.</li>';
         echo '<li>Добавьте бота в нужную группу/канал в MAX, где будут публикации.</li>';
         echo '<li>Отправьте любое сообщение в эту группу (чтобы чат появился в списке API).</li>';
@@ -414,15 +414,6 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 }
             }
         }
-
-        echo '<h3>Скриншоты-подсказки</h3>';
-        $img2 = plugins_url('assets/help/step2.svg', __FILE__);
-        $img3 = plugins_url('assets/help/step3.svg', __FILE__);
-
-        echo '<div style="display:grid;grid-template-columns:1fr;gap:14px;max-width:940px;">';
-        echo '<figure style="margin:0;padding:10px;border:1px solid #dcdcde;background:#fff;"><img src="'.esc_url($img2).'" alt="Шаг 1: добавить бота в группу" style="width:100%;height:auto;"><figcaption style="margin-top:8px;">1) Добавьте бота в целевую группу/канал и выдайте права.</figcaption></figure>';
-        echo '<figure style="margin:0;padding:10px;border:1px solid #dcdcde;background:#fff;"><img src="'.esc_url($img3).'" alt="Шаг 2: найти chat id" style="width:100%;height:auto;"><figcaption style="margin-top:8px;">2) Найдите Chat ID на этой вкладке и вставьте в настройки.</figcaption></figure>';
-        echo '</div>';
 
         echo '<h3>Контакты</h3>';
         echo '<p>По всем вопросам: <a href="mailto:aleksey@krivoshein.site">aleksey@krivoshein.site</a>.</p>';
@@ -1092,7 +1083,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             : wp_strip_all_tags(strip_shortcodes((string)get_post_field('post_content',$post_id)));
 
         $excerpt = trim(preg_replace('/\s+/', ' ', (string)$excerpt));
-        $excerpt = wp_trim_words($excerpt, 40, '…');
+        $max = isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT;
+        if ($max < 200) $max = 200;
+        if ($max > self::MAX_TEXT) $max = self::MAX_TEXT;
+        $word_limit = max(20, min(300, (int)floor($max / 8)));
+        $excerpt = wp_trim_words($excerpt, $word_limit, '…');
 
         $base = trim($title . "\n\n" . $excerpt);
         return self::append_custom_fields($base, $post_id, $settings);
@@ -1161,7 +1156,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $max = isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT;
         if ($max < 200) $max = 200;
         if ($max > self::MAX_TEXT) $max = self::MAX_TEXT;
-        if (mb_strlen($text) > $max) $text = mb_substr($text, 0, $max);
+
+        if (mb_strlen($text, 'UTF-8') > $max) {
+            $text = rtrim(mb_substr($text, 0, max(1, $max - 1), 'UTF-8')) . '…';
+        }
+
         return $text;
     }
 
