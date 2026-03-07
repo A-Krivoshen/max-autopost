@@ -381,7 +381,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<div style="max-width:980px;background:#fff;border:1px solid #dcdcde;padding:16px;margin-top:14px;">';
         echo '<h2 style="margin-top:0;">Как получить Token и Chat ID для MAX</h2>';
         echo '<ol style="line-height:1.6;">';
-        echo '<li>Создайте чат-бота в MAX для партнёров (как на скриншоте: раздел <strong>Чат-бот и мини-приложение</strong>).</li>';
+        echo '<li>Создайте чат-бота в MAX для партнёров (раздел <strong>Чат-бот и мини-приложение</strong>).</li>';
         echo '<li>В разделе <strong>Интеграция</strong> получите токен и вставьте его в настройку <strong>Token</strong> плагина.</li>';
         echo '<li>Добавьте бота в нужную группу/канал в MAX, где будут публикации.</li>';
         echo '<li>Отправьте любое сообщение в эту группу (чтобы чат появился в списке API).</li>';
