@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.0
+- Added dedicated "Help" admin tab with guided setup steps for bot creation, group setup, and Chat ID discovery.
+- Added token-based chat discovery to display available Chat IDs directly in admin panel.
+
 ## 1.5.2
 - Added upgrade queue cutoff to prevent immediate flood of old queued items after plugin update.
 - Requeueing now refreshes queue metadata and safely re-enables sending.

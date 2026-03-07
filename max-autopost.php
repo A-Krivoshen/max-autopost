@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.5.2
+ * Version: 1.6.0
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -16,7 +16,7 @@ final class KRV_MAX_Autopost {
     private const VER_OPT = 'krv_max_autopost_ver';
     private const CUTOFF_OPT = 'krv_max_autopost_queue_cutoff';
 
-    private const VERSION = '1.5.2';
+    private const VERSION = '1.6.0';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -192,16 +192,18 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.5.2</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.6.0</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
         echo self::tab_link('logs','Логи',$tab);
+        echo self::tab_link('help','Техпомощь',$tab);
         echo '</h2>';
 
         if ($tab === 'settings') self::tab_settings($s);
         elseif ($tab === 'queue') self::tab_queue();
-        else self::tab_logs();
+        elseif ($tab === 'logs') self::tab_logs();
+        else self::tab_help($s);
 
         self::render_support_block();
         echo '</div>';
@@ -361,6 +363,50 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             echo '<tr><td colspan="5">Логи пустые.</td></tr>';
         }
         echo '</tbody></table>';
+    }
+
+
+    private static function tab_help(array $s): void {
+        echo '<div style="max-width:980px;background:#fff;border:1px solid #dcdcde;padding:16px;margin-top:14px;">';
+        echo '<h2 style="margin-top:0;">Как получить Token и Chat ID для MAX</h2>';
+        echo '<ol style="line-height:1.6;">';
+        echo '<li>Создайте чат-бота в MAX для партнёров (как на скриншоте: раздел <strong>Чат-бот и мини-приложение</strong>).</li>';
+        echo '<li>В разделе <strong>Интеграция</strong> получите токен и вставьте его в настройку <strong>Token</strong> плагина.</li>';
+        echo '<li>Добавьте бота в нужную группу/канал в MAX, где будут публикации.</li>';
+        echo '<li>Отправьте любое сообщение в эту группу (чтобы чат появился в списке API).</li>';
+        echo '<li>Ниже нажмите кнопку поиска — плагин попробует показать доступные Chat ID.</li>';
+        echo '</ol>';
+        echo '<p><strong>Важно:</strong> если список пуст, проверьте права бота в группе и отправьте тестовое сообщение в чат ещё раз.</p>';
+
+        $token = self::token($s);
+        if ($token === '') {
+            echo '<div class="notice notice-warning inline"><p>Сначала укажите Token на вкладке «Настройки», затем вернитесь сюда.</p></div>';
+        } else {
+            $res = self::discover_chats($token);
+            if (!empty($res['error'])) {
+                echo '<div class="notice notice-error inline"><p>Не удалось получить чаты: '.esc_html((string)$res['error']).'</p></div>';
+            } else {
+                $items = $res['items'] ?? [];
+                if (!empty($items)) {
+                    echo '<h3>Найденные Chat ID</h3>';
+                    echo '<table class="widefat striped" style="max-width:940px;"><thead><tr><th>Chat ID</th><th>Название</th><th>Тип</th></tr></thead><tbody>';
+                    foreach ($items as $it) {
+                        echo '<tr>';
+                        echo '<td><code>'.esc_html((string)($it['id'] ?? '')).'</code></td>';
+                        echo '<td>'.esc_html((string)($it['title'] ?? '-')).'</td>';
+                        echo '<td>'.esc_html((string)($it['type'] ?? '-')).'</td>';
+                        echo '</tr>';
+                    }
+                    echo '</tbody></table>';
+                } else {
+                    echo '<div class="notice notice-info inline"><p>Чаты не найдены. Добавьте бота в группу, отправьте туда сообщение и обновите страницу.</p></div>';
+                }
+            }
+        }
+
+        echo '<h3>Контакты</h3>';
+        echo '<p>По всем вопросам: <a href="mailto:aleksey@krivoshein.site">aleksey@krivoshein.site</a>.</p>';
+        echo '</div>';
     }
 
     /* ================= METABOX ================= */
@@ -841,6 +887,111 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         return $j2;
+    }
+
+
+    private static function discover_chats(string $token): array {
+        $endpoints = [
+            'https://platform-api.max.ru/chats?limit=50',
+            'https://platform-api.max.ru/chats',
+        ];
+
+        $last_error = '';
+
+        foreach ($endpoints as $url) {
+            $r = self::max_get_json($url, $token);
+            if (!empty($r['error'])) {
+                $last_error = (string)$r['error'];
+                continue;
+            }
+
+            $items = self::normalize_chats_payload($r['json'] ?? null);
+            return ['items' => $items, 'error' => ''];
+        }
+
+        return ['items'=>[], 'error'=> $last_error !== '' ? $last_error : 'Неизвестная ошибка'];
+    }
+
+    private static function max_get_json(string $url, string $token): array {
+        $r = wp_remote_get($url, [
+            'headers'=>[
+                'Authorization'=>$token,
+                'Accept'=>'application/json',
+            ],
+            'timeout'=>15,
+        ]);
+
+        if (is_wp_error($r)) {
+            return ['error'=>$r->get_error_message(), 'json'=>null];
+        }
+
+        $code = (int)wp_remote_retrieve_response_code($r);
+        $body = (string)wp_remote_retrieve_body($r);
+        if ($code < 200 || $code >= 300) {
+            return ['error'=>'HTTP '.$code.': '.self::short($body), 'json'=>null];
+        }
+
+        $j = json_decode($body, true);
+        if (!is_array($j)) {
+            return ['error'=>'Bad JSON: '.self::short($body), 'json'=>null];
+        }
+
+        return ['error'=>'', 'json'=>$j];
+    }
+
+    private static function is_list_array(array $arr): bool {
+        $i = 0;
+        foreach (array_keys($arr) as $k) {
+            if ($k !== $i++) return false;
+        }
+        return true;
+    }
+
+    private static function normalize_chats_payload($json): array {
+        if (!is_array($json)) return [];
+
+        $list = [];
+        if (isset($json['chats']) && is_array($json['chats'])) {
+            $list = $json['chats'];
+        } elseif (isset($json['items']) && is_array($json['items'])) {
+            $list = $json['items'];
+        } elseif (self::is_list_array($json)) {
+            $list = $json;
+        }
+
+        $out = [];
+        foreach ($list as $row) {
+            if (!is_array($row)) continue;
+
+            $id = '';
+            foreach (['chat_id','id','chatId'] as $k) {
+                if (isset($row[$k]) && (string)$row[$k] !== '') {
+                    $id = (string)$row[$k];
+                    break;
+                }
+            }
+            if ($id === '') continue;
+
+            $title = '';
+            foreach (['title','name','chat_title'] as $k) {
+                if (isset($row[$k]) && (string)$row[$k] !== '') {
+                    $title = (string)$row[$k];
+                    break;
+                }
+            }
+
+            $type = '';
+            foreach (['type','chat_type'] as $k) {
+                if (isset($row[$k]) && (string)$row[$k] !== '') {
+                    $type = (string)$row[$k];
+                    break;
+                }
+            }
+
+            $out[] = ['id'=>$id,'title'=>$title,'type'=>$type];
+        }
+
+        return $out;
     }
 
     private static function api(array $payload, string $chat_id, string $token, int $post_id, bool $debug) {
