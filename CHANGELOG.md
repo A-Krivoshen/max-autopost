@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.0
+- Added install-stamp queue isolation: worker now sends only items queued during the current plugin install/upgrade cycle.
+- Legacy queued items from previous installs/upgrades are quarantined and cannot auto-send after entering token/chat id.
+
 ## 1.7.9
 - Added stale-queue quarantine on install/upgrade: legacy queued items are moved to `error` and are not auto-sent.
 - Prevents accidental sending of old published posts right after entering token/chat id.
