@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.9
+- Added stale-queue quarantine on install/upgrade: legacy queued items are moved to `error` and are not auto-sent.
+- Prevents accidental sending of old published posts right after entering token/chat id.
+
 ## 1.7.8
 - Restored custom post type support reliability: row/bulk hooks are now registered on `init` after CPT registration.
 - Removed request-local post-type list caching that could hide CPTs in settings/hook registration.

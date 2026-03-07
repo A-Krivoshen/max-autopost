@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.7.8
+Stable tag: 1.7.9
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.7.9 =
+* Добавлена блокировка старой очереди после установки/обновления: устаревшие queued-посты переводятся в error и не улетают автоматически.
+* Старые материалы можно отправить только после ручной постановки в очередь.
+
 = 1.7.8 =
 * Возвращена поддержка кастомных типов записей: регистрация row/bulk hooks перенесена на `init` после регистрации CPT.
 * Убрано кэширование списков типов записей, чтобы кастомные типы не пропадали из настроек.

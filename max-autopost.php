@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.7.8
+ * Version: 1.7.9
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -16,7 +16,7 @@ final class KRV_MAX_Autopost {
     private const VER_OPT = 'krv_max_autopost_ver';
     private const CUTOFF_OPT = 'krv_max_autopost_queue_cutoff';
 
-    private const VERSION = '1.7.8';
+    private const VERSION = '1.7.9';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -85,8 +85,10 @@ final class KRV_MAX_Autopost {
             wp_schedule_event(time() + 60, self::CRON_SCHEDULE, self::CRON_HOOK);
         }
 
+        $cutoff = time();
         update_option(self::VER_OPT, self::VERSION, false);
-        update_option(self::CUTOFF_OPT, time(), false);
+        update_option(self::CUTOFF_OPT, $cutoff, false);
+        self::quarantine_stale_queue($cutoff);
     }
 
     public static function deactivate(): void {
@@ -103,8 +105,35 @@ final class KRV_MAX_Autopost {
             return;
         }
 
+        $cutoff = time();
         update_option(self::VER_OPT, self::VERSION, false);
-        update_option(self::CUTOFF_OPT, time(), false);
+        update_option(self::CUTOFF_OPT, $cutoff, false);
+        self::quarantine_stale_queue($cutoff);
+    }
+
+    private static function quarantine_stale_queue(int $cutoff): void {
+        $posts = get_posts([
+            'post_type' => 'any',
+            'post_status' => 'publish',
+            'numberposts' => -1,
+            'fields' => 'ids',
+            'suppress_filters' => true,
+            'meta_query' => [
+                ['key' => self::META_STATUS, 'value' => 'queued'],
+                [
+                    'relation' => 'OR',
+                    ['key' => self::META_QUEUEDAT, 'compare' => 'NOT EXISTS'],
+                    ['key' => self::META_QUEUEDAT, 'value' => $cutoff, 'type' => 'NUMERIC', 'compare' => '<'],
+                ],
+            ],
+        ]);
+
+        foreach ($posts as $post_id) {
+            $post_id = (int)$post_id;
+            update_post_meta($post_id, self::META_STATUS, 'error');
+            update_post_meta($post_id, self::META_ERROR, 'Старая очередь заблокирована после установки/обновления. Поставьте пост в очередь вручную.');
+            update_post_meta($post_id, self::META_NEXTTRY, 0);
+        }
     }
 
 
@@ -212,7 +241,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.7.8</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.7.9</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
