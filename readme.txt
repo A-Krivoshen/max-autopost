@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.5.0
+Stable tag: 1.5.1
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.5.1 =
+* Галочки в настройках переведены на выбор типов записей (включая кастомные).
+* Контакт поддержки визуально отделён от рекламного виджета.
+
 = 1.5.0 =
 * Добавлен выбор кастомных полей галочками в настройках плагина.
 * На странице админки встроен рекламный виджет и блок контактов (aleksey@krivoshein.site).
