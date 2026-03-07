@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="920" viewBox="0 0 1440 920">
+  <rect width="1440" height="920" fill="#e5e7eb"/>
+  <rect x="0" y="0" width="1440" height="52" fill="#f3f4f6"/>
+  <text x="22" y="33" font-family="Arial" font-size="38" font-weight="700" fill="#111827">◖ max для партнёров</text>
+
+  <rect x="80" y="84" width="1240" height="92" rx="28" fill="#ffffff"/>
+  <circle cx="130" cy="130" r="28" fill="#60a5fa"/>
+  <text x="165" y="126" font-family="Arial" font-size="40" font-weight="700" fill="#111827">Wordpress2max</text>
+  <text x="165" y="154" font-family="Arial" font-size="32" fill="#6b7280">id770603253213_bot • на модерации</text>
+
+  <rect x="96" y="208" width="384" height="384" rx="44" fill="#ffffff"/>
+  <rect x="512" y="208" width="384" height="384" rx="44" fill="#ffffff"/>
+  <rect x="928" y="208" width="384" height="384" rx="44" fill="#ffffff" stroke="#8b5cf6" stroke-width="4"/>
+
+  <text x="144" y="414" font-family="Arial" font-size="46" font-weight="700" fill="#111827">Каналы</text>
+  <text x="560" y="414" font-family="Arial" font-size="46" font-weight="700" fill="#111827">Чат-бот</text>
+  <text x="960" y="414" font-family="Arial" font-size="46" font-weight="700" fill="#111827">Интеграция</text>
+
+  <rect x="147" y="505" width="282" height="64" rx="12" fill="#f3f4f6"/>
+  <text x="233" y="548" font-family="Arial" font-size="38" fill="#111827">Создать</text>
+  <rect x="563" y="505" width="282" height="64" rx="12" fill="#f3f4f6"/>
+  <text x="644" y="548" font-family="Arial" font-size="38" fill="#111827">Настроить</text>
+  <rect x="979" y="505" width="282" height="64" rx="12" fill="#111827"/>
+  <text x="1049" y="548" font-family="Arial" font-size="38" fill="#ffffff">Получить токен</text>
+
+  <path d="M 1220 610 C 1220 680, 1160 744, 1084 744" stroke="#ef4444" stroke-width="10" fill="none" marker-end="url(#arr)"/>
+  <rect x="848" y="742" width="520" height="132" rx="16" fill="#fff7ed" stroke="#fb923c" stroke-width="3"/>
+  <text x="876" y="800" font-family="Arial" font-size="34" font-weight="700" fill="#9a3412">Нажмите «Получить токен»</text>
+  <text x="876" y="844" font-family="Arial" font-size="30" fill="#9a3412">и скопируйте токен для плагина.</text>
+
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#ef4444"/>
+    </marker>
+  </defs>
+</svg>
