@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.8.3
+ * Version: 1.8.4
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -18,7 +18,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.8.3';
+    private const VERSION = '1.8.4';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -34,6 +34,8 @@ final class KRV_MAX_Autopost {
     private const CRON_HOOK     = 'krv_max_autopost_cron';
     private const CRON_SCHEDULE = 'krv_max_minute';
     private const CRON_LOCK_KEY = 'krv_max_autopost_lock';
+
+    private const GITHUB_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost';
 
     private const MIN_TEXT   = 200;
     private const MAX_TEXT   = 3900;
@@ -268,7 +270,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.3</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.4</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -500,6 +502,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         echo '<h3>Контакты</h3>';
         echo '<p>По всем вопросам: <a href="mailto:aleksey@krivoshein.site">aleksey@krivoshein.site</a>.</p>';
+        echo '<p><a class="button button-primary" target="_blank" rel="noopener noreferrer" href="'.esc_url(self::GITHUB_REPO_URL).'">Оставить звезду на GitHub</a></p>';
+        echo '<p class="description" style="margin-top:0;">Откроется страница репозитория — нажмите кнопку <strong>Star</strong> справа сверху.</p>';
         echo '</div>';
     }
 

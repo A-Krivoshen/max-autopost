@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.4
+- Added “Оставить звезду на GitHub” button to the Help tab.
+- Button opens the GitHub repository page where users can click Star.
+
 ## 1.8.3
 - Manual queue run now processes exactly one item per click.
 - Manual run no longer arms persistent automatic worker mode.

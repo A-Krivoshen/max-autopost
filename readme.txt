@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.8.3
+Stable tag: 1.8.4
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.8.4 =
+* На вкладке «Техпомощь» добавлена кнопка «Оставить звезду на GitHub».
+* Кнопка открывает страницу репозитория для установки звезды (Star).
+
 = 1.8.3 =
 * Кнопка «Запустить очередь сейчас» теперь отправляет только 1 сообщение за нажатие.
 * Ручной запуск не переводит воркер в постоянный авто-режим.
