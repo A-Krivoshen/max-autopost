@@ -1189,7 +1189,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     private static function clean_publish_text(string $text): string {
         $text = str_replace(["
-", ""], "
+", "
+"], "
 ", $text);
         $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $text = str_replace([" ", " ", " "], ' ', $text);
