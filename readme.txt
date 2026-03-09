@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.8.4
+Stable tag: 1.8.5
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.8.5 =
+* Добавлена очистка `&nbsp;` и непечатных символов перед отправкой текста в MAX.
+* Успешная кнопка «Отправить тест» теперь включает автоворкер, чтобы отложенные посты отправлялись автоматически.
+
 = 1.8.4 =
 * На вкладке «Техпомощь» добавлена кнопка «Оставить звезду на GitHub».
 * Кнопка открывает страницу репозитория для установки звезды (Star).

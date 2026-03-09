@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.5
+- Added outgoing text cleanup to remove HTML entities/non-printable artifacts (including `&nbsp;`).
+- Successful test-send now arms the worker so scheduled posts can auto-send again.
+
 ## 1.8.4
 - Added “Оставить звезду на GitHub” button to the Help tab.
 - Button opens the GitHub repository page where users can click Star.

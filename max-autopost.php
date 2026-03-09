@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.8.4
+ * Version: 1.8.5
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -18,7 +18,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.8.4';
+    private const VERSION = '1.8.5';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -270,7 +270,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.4</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.5</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -724,7 +724,10 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         if (!empty($attachments)) $payload['attachments'] = $attachments;
 
         $ok = self::api($payload, $chat_id, $token, 0, (bool)$s['debug']);
-        self::notice($ok===true?'success':'error', $ok===true?'Тест отправлен.':'Тест не отправился: '.self::short((string)$ok));
+        if ($ok === true) {
+            update_option(self::WORKER_ENABLED_OPT, 1, false);
+        }
+        self::notice($ok===true?'success':'error', $ok===true?'Тест отправлен. Автоотправка очереди включена.':'Тест не отправился: '.self::short((string)$ok));
 
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
         exit;
@@ -1184,18 +1187,33 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return $limit;
     }
 
+    private static function clean_publish_text(string $text): string {
+        $text = str_replace(["
+", "
+"], "
+", $text);
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = str_replace([" ", " ", " "], ' ', $text);
+        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+/u', '', $text);
+        $text = preg_replace('/[ 	]+/u', ' ', $text);
+        $text = preg_replace('/ *
+ */u', "
+", $text);
+        return trim((string)$text);
+    }
+
     private static function build_text(int $post_id, array $settings): string {
         $override = trim((string)get_post_meta($post_id,self::META_OVERRIDE,true));
         $override = str_replace(["\r\n","\r"], "\n", $override);
         if ($override !== '') return self::append_custom_fields($override, $post_id, $settings);
 
-        $title = get_the_title($post_id);
+        $title = self::clean_publish_text((string)get_the_title($post_id));
 
         $excerpt = has_excerpt($post_id)
             ? get_the_excerpt($post_id)
             : wp_strip_all_tags(strip_shortcodes((string)get_post_field('post_content',$post_id)));
 
-        $excerpt = trim(preg_replace('/\s+/', ' ', (string)$excerpt));
+        $excerpt = self::clean_publish_text((string)$excerpt);
         $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
         $word_limit = max(20, min(300, (int)floor($max / 8)));
         $excerpt = wp_trim_words($excerpt, $word_limit, '…');
@@ -1220,7 +1238,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             if (is_array($value)) {
                 $value = wp_json_encode($value, JSON_UNESCAPED_UNICODE);
             }
-            $value = trim((string)$value);
+            $value = self::clean_publish_text((string)$value);
             if ($value === '') {
                 continue;
             }
@@ -1263,7 +1281,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     private static function limit_text(string $text, array $settings): string {
-        $text = trim($text);
+        $text = self::clean_publish_text($text);
         $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
 
         if (mb_strlen($text, 'UTF-8') > $max) {
