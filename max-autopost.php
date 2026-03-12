@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.8.5
+ * Version: 1.8.6
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -18,7 +18,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.8.5';
+    private const VERSION = '1.8.6';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -67,6 +67,8 @@ final class KRV_MAX_Autopost {
         add_action('admin_post_krv_max_send_now', [__CLASS__, 'handle_send_now']);
         add_action('admin_post_krv_max_queue_now', [__CLASS__, 'handle_queue_now']);
         add_action('admin_post_krv_max_queue_all_published', [__CLASS__, 'handle_queue_all_published']);
+        add_action('admin_post_krv_max_worker_enable', [__CLASS__, 'handle_worker_enable']);
+        add_action('admin_post_krv_max_worker_disable', [__CLASS__, 'handle_worker_disable']);
 
         // Register row/bulk hooks after all CPTs are registered.
         add_action('init', [__CLASS__, 'register_post_type_hooks'], 20);
@@ -270,7 +272,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.5</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.6</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -378,12 +380,39 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     private static function tab_queue(): void {
+        $worker_on = self::is_worker_enabled();
+        $status_text = $worker_on ? 'ON' : 'OFF';
+        $status_color = $worker_on ? '#2e7d32' : '#b71c1c';
+
+        echo '<div style="margin:8px 0 12px;padding:8px 12px;background:#fff;border-left:4px solid '.esc_attr($status_color).';">';
+        echo '<strong>Статус автоворкера:</strong> <span style="color:'.esc_attr($status_color).';font-weight:700;">'.esc_html($status_text).'</span>';
+        echo $worker_on
+            ? '<span style="margin-left:8px;color:#555;">Автоматическая обработка очереди включена.</span>'
+            : '<span style="margin-left:8px;color:#555;">Автоматическая обработка очереди выключена.</span>';
+        echo '</div>';
+
         echo '<div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0;">';
+
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
         wp_nonce_field('krv_max_run_queue');
         echo '<input type="hidden" name="action" value="krv_max_run_queue">';
         submit_button('Запустить очередь сейчас','secondary','submit',false);
         echo '</form>';
+
+        if ($worker_on) {
+            echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+            wp_nonce_field('krv_max_worker_disable');
+            echo '<input type="hidden" name="action" value="krv_max_worker_disable">';
+            submit_button('Выключить автоворкер','secondary','submit',false);
+            echo '</form>';
+        } else {
+            echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+            wp_nonce_field('krv_max_worker_enable');
+            echo '<input type="hidden" name="action" value="krv_max_worker_enable">';
+            submit_button('Включить автоворкер','secondary','submit',false);
+            echo '</form>';
+        }
+
         echo '<p class="description" style="margin:6px 0 0;">Сохранение Token/Chat ID не запускает автоотправку старой очереди. Ручной запуск отправляет только 1 элемент за нажатие.</p>';
 
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
@@ -738,6 +767,24 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         check_admin_referer('krv_max_run_queue');
         self::process_queue(true);
         self::notice('success','Очередь запущена вручную (1 элемент).');
+        wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
+        exit;
+    }
+
+    public static function handle_worker_enable(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_worker_enable');
+        update_option(self::WORKER_ENABLED_OPT, 1, false);
+        self::notice('success','Автоворкер включен.');
+        wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
+        exit;
+    }
+
+    public static function handle_worker_disable(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_worker_disable');
+        update_option(self::WORKER_ENABLED_OPT, 0, false);
+        self::notice('success','Автоворкер выключен.');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
     }

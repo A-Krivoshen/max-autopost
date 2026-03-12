@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.8.5
+Stable tag: 1.8.6
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.8.6 =
+* Добавлен индикатор статуса автоворкера (OFF/ON) на вкладке «Очередь».
+* Добавлены отдельные кнопки ручного включения/выключения автоворкера.
+
 = 1.8.5 =
 * Добавлена очистка `&nbsp;` и непечатных символов перед отправкой текста в MAX.
 * Успешная кнопка «Отправить тест» теперь включает автоворкер, чтобы отложенные посты отправлялись автоматически.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.6
+- Added explicit worker status indicator (OFF/ON) on Queue tab.
+- Added dedicated controls to manually enable/disable auto-worker.
+
 ## 1.8.5
 - Added outgoing text cleanup to remove HTML entities/non-printable artifacts (including `&nbsp;`).
 - Successful test-send now arms the worker so scheduled posts can auto-send again.
