@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.7
+- Added queue status filters on Queue tab: all / queued / error / sent.
+- Improves admin triage for pending and failed items.
+
 ## 1.8.6
 - Added explicit worker status indicator (OFF/ON) on Queue tab.
 - Added dedicated controls to manually enable/disable auto-worker.

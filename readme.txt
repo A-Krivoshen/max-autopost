@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.8.6
+Stable tag: 1.8.7
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.8.7 =
+* На вкладке «Очередь» добавлены фильтры статусов: queued / error / sent / все.
+* Фильтры помогают быстрее находить проблемные элементы и уже отправленные посты.
+
 = 1.8.6 =
 * Добавлен индикатор статуса автоворкера (OFF/ON) на вкладке «Очередь».
 * Добавлены отдельные кнопки ручного включения/выключения автоворкера.
