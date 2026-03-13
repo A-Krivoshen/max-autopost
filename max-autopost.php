@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.8.7
+ * Version: 1.8.8
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -18,7 +18,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.8.7';
+    private const VERSION = '1.8.8';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|error
     private const META_ERROR    = '_krv_max_error';
@@ -272,7 +272,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.7</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.8</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -379,6 +379,30 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '</form>';
     }
 
+    private static function queue_status_count(?string $status = null): int {
+        $args = [
+            'post_type' => self::supported_post_types(),
+            'post_status' => 'any',
+            'posts_per_page' => 1,
+            'fields' => 'ids',
+            'no_found_rows' => false,
+            'update_post_meta_cache' => false,
+            'update_post_term_cache' => false,
+        ];
+
+        if ($status !== null && $status !== '') {
+            $args['meta_query'] = [
+                ['key' => self::META_STATUS, 'value' => $status],
+            ];
+            $args['meta_key'] = self::META_STATUS;
+        }
+
+        $q = new WP_Query($args);
+        $count = (int)$q->found_posts;
+        wp_reset_postdata();
+        return $count;
+    }
+
     private static function tab_queue(): void {
         $worker_on = self::is_worker_enabled();
         $status_text = $worker_on ? 'ON' : 'OFF';
@@ -442,6 +466,28 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             ], admin_url('admin.php'));
             $cls = $status_filter === $key ? 'button button-primary' : 'button';
             echo '<a class="'.esc_attr($cls).'" href="'.esc_url($url).'">'.esc_html($label).'</a>';
+        }
+        echo '</div>';
+
+        $counts = [
+            'all' => self::queue_status_count(null),
+            'queued' => self::queue_status_count('queued'),
+            'error' => self::queue_status_count('error'),
+            'sent' => self::queue_status_count('sent'),
+        ];
+
+        echo '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 14px;">';
+        foreach (['all' => 'Все', 'queued' => 'queued', 'error' => 'error', 'sent' => 'sent'] as $key => $label) {
+            $url = add_query_arg([
+                'page' => 'krv-max-autopost',
+                'tab' => 'queue',
+                'qstatus' => $key,
+            ], admin_url('admin.php'));
+            $border = $status_filter === $key ? '#2271b1' : '#dcdcde';
+            echo '<a href="'.esc_url($url).'" style="text-decoration:none;background:#fff;border:1px solid '.esc_attr($border).';border-radius:6px;padding:8px 10px;min-width:90px;display:inline-block;">';
+            echo '<div style="font-size:12px;color:#646970;">'.esc_html($label).'</div>';
+            echo '<div style="font-size:18px;font-weight:700;color:#1d2327;">'.esc_html((string)($counts[$key] ?? 0)).'</div>';
+            echo '</a>';
         }
         echo '</div>';
 

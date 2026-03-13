@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.8
+- Added queue status counters (all/queued/error/sent) on Queue tab.
+- Counter cards are clickable and switch Queue filter directly.
+
 ## 1.8.7
 - Added queue status filters on Queue tab: all / queued / error / sent.
 - Improves admin triage for pending and failed items.
