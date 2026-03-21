@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.8.8
+Stable tag: 1.8.9
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.8.9 =
+* Добавлена поддержка `KRV_MAX_CHAT_ID` через `wp-config.php`.
+* Если константа задана, плагин использует её для всех отправок вместо Chat ID из БД.
+
 = 1.8.8 =
 * Добавлены счетчики статусов очереди (все/queued/error/sent) на вкладке «Очередь».
 * Карточки-счетчики кликабельны и переключают фильтр по статусу.

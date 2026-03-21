@@ -1,4 +1,8 @@
-# MAX Autopost (Free) v1.8.8
+# MAX Autopost (Free) v1.8.9
+
+## Что нового в 1.8.9
+- Добавлена поддержка `define('KRV_MAX_CHAT_ID', '...');` — теперь Chat ID, как и Token, можно вынести из базы WordPress в `wp-config.php`.
+- Все отправки и тестовые сообщения используют Chat ID из `wp-config.php`, если константа задана.
 
 Fix релиз: MAX upload step2 иногда возвращает payload не как `{token,url,type}`, а как вложенный объект, например `{"photos":{...}}`.  
 Плагин теперь принимает **любой валидный JSON** и передаёт его целиком в `image.payload`.

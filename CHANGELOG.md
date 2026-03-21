@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.9
+- Added support for `define('KRV_MAX_CHAT_ID', '...')` so Chat ID can be stored in `wp-config.php` instead of the database.
+- Reused the new helper in test-send and live post sending to ensure one consistent Chat ID source.
+
 ## 1.8.8
 - Added queue status counters (all/queued/error/sent) on Queue tab.
 - Counter cards are clickable and switch Queue filter directly.
