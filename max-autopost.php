@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.8.9
+ * Version: 1.9.0
  * Author: Dr.Slon
  * Requires PHP: 8.0
  */
@@ -18,7 +18,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.8.9';
+    private const VERSION = '1.9.0';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
     private const META_ERROR    = '_krv_max_error';
@@ -304,7 +304,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.9</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) ' . esc_html(self::VERSION) . '</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -953,10 +953,18 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         if ($res['status'] === 'success') {
             update_post_meta($post_id,self::META_STATUS,'sent');
             delete_post_meta($post_id,self::META_ERROR);
+            delete_post_meta($post_id,self::META_ATTEMPTS);
+            delete_post_meta($post_id,self::META_NEXTTRY);
+            delete_post_meta($post_id,self::META_QUEUEDAT);
+            delete_post_meta($post_id,self::META_QSTAMP);
             self::notice('success','Отправлено в MAX.');
         } elseif ($res['status'] === 'partial_success') {
             update_post_meta($post_id,self::META_STATUS,'partial_success');
             update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
+            delete_post_meta($post_id,self::META_ATTEMPTS);
+            delete_post_meta($post_id,self::META_NEXTTRY);
+            delete_post_meta($post_id,self::META_QUEUEDAT);
+            delete_post_meta($post_id,self::META_QSTAMP);
             self::notice('warning','Частично отправлено: '.self::short((string)$res['message']));
         } else {
             update_post_meta($post_id,self::META_STATUS,'error');
@@ -1105,7 +1113,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         ];
         $hash = hash('sha256', wp_json_encode($sig, JSON_UNESCAPED_UNICODE));
         $prev = (string)get_post_meta($post_id,self::META_SENTHASH,true);
-        if ($prev && hash_equals($prev,$hash)) return ['status'=>'success', 'message'=>'Уже отправлено ранее (dedupe).', 'results'=>[]];
+        if ($prev && hash_equals($prev,$hash)) {
+            $prev_results = get_post_meta($post_id, self::META_TARGET_RESULTS, true);
+            $prev_results = is_array($prev_results) ? $prev_results : [];
+            return ['status'=>'success', 'message'=>'Уже отправлено ранее (dedupe).', 'results'=>$prev_results];
+        }
 
         $dispatch = self::dispatch_to_targets($payload, $targets, $token, $post_id, (bool)$s['debug']);
         if ($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success') {

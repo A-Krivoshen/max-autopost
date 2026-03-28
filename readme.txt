@@ -4,11 +4,11 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.8.9
+Stable tag: 1.9.0
 License: MIT
 License URI: https://opensource.org/license/mit/
 
-Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (картинка + текст + кнопка), очередь WP-Cron, retry, логи.
+Автопостинг из WordPress в MAX (platform-api.max.ru): отправка в канал/группу и сразу в несколько chat_id, одно сообщение (картинка + текст + кнопка), очередь WP-Cron, retry, логи.
 
 == Description ==
 
@@ -31,6 +31,13 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.9.0 =
+* Добавлена multi-target отправка: один пост может отправляться сразу в несколько Chat ID (каналы и/или группы MAX).
+* Сохранена обратная совместимость: старый `chat_id` остаётся основным и продолжает работать как раньше.
+* Добавлено поле «Дополнительные Chat ID» (одно значение на строку) с trim/sanitize, удалением пустых строк и дубликатов.
+* Добавлен итоговый статус `partial_success` и хранение per-target результатов отправки в метаданных поста.
+* Кнопка «Отправить тест» теперь отправляет тестовое сообщение во все настроенные цели.
+
 = 1.8.9 =
 * Добавлена поддержка `KRV_MAX_CHAT_ID` через `wp-config.php`.
 * Если константа задана, плагин использует её для всех отправок вместо Chat ID из БД.
