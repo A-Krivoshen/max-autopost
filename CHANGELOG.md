@@ -1,5 +1,6 @@
 # Changelog
-
+## 1.10.3
+- test release for GitHub updater verification
 ## 1.10.2
 - Release hardening for `message_format` flow.
 - Verified formatted mode compatibility with multi-target, image attachments, and "Читать" button payload.

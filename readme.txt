@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.10.2
+Stable tag: 1.10.3
 License: MIT
 License URI: https://opensource.org/license/mit/
 
