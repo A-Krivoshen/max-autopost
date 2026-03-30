@@ -1,4 +1,4 @@
-# MAX Autopost (Free) v1.10.1
+# MAX Autopost (Free) v1.10.2
 
 ## Что нового в 1.10.1
 - Релизная проверка `message_format`: подтверждена совместимость `formatted` с multi-target отправкой, изображением и кнопкой «Читать».

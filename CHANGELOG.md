@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.10.1
+## 1.10.2
 - Release hardening for `message_format` flow.
 - Verified formatted mode compatibility with multi-target, image attachments, and "Читать" button payload.
 - Confirmed formatted->plain fallback behavior and logging on API send errors.
