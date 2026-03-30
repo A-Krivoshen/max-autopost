@@ -875,6 +875,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             $payload['parse_mode'] = (string)$test_content['parse_mode'];
         }
         $attachments = [];
+        $test_send_mode = 'test_text_only';
 
         // Optional image for test message
         if (!empty($s['include_image']) && function_exists('curl_init')) {
@@ -885,8 +886,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                     $file = get_attached_file($site_icon);
                     if (is_string($file) && $file && file_exists($file)) {
                         $up = self::upload($file, $token, 0);
-                        if ($up !== false) {
+                        if ($up !== false && self::has_media_payload_markers($up)) {
                             $attachments[] = ['type'=>'image','payload'=>$up];
+                            $test_send_mode = 'test_with_image';
+                        } elseif ($up !== false) {
+                            self::log('test_image_skip', 0, 0, 'Upload payload has no media markers; fallback to test_text_only');
                         }
                     }
                 }
@@ -907,6 +911,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         if (!empty($attachments)) $payload['attachments'] = $attachments;
+        self::log('test_send_mode', 0, 0, $test_send_mode);
 
         $dispatch = self::dispatch_to_targets(
             $payload,
@@ -1522,6 +1527,26 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         return ['status'=>'success', 'message'=>'Успешно отправлено во все target: '.$success.'/'.$total.'.', 'results'=>$results];
+    }
+
+    private static function has_media_payload_markers($payload): bool {
+        if (!is_array($payload) || empty($payload)) {
+            return false;
+        }
+
+        foreach (['photos', 'url', 'token'] as $key) {
+            if (array_key_exists($key, $payload) && $payload[$key] !== '' && $payload[$key] !== null) {
+                return true;
+            }
+        }
+
+        foreach ($payload as $value) {
+            if (is_array($value) && self::has_media_payload_markers($value)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static function log_target_result(int $post_id, array $result): void {

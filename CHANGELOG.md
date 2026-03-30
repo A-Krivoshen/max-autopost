@@ -1,4 +1,10 @@
 # Changelog
+## 1.10.4
+- Fixed test-send payload selection: test messages now use `test_text_only` when no valid image payload is available.
+- Test-send uses media payload only when upload payload contains valid media markers (`photos`, `url`, or `token`), otherwise it safely falls back to text-only send.
+- Added explicit test-send mode logging: `test_text_only` or `test_with_image`.
+- Preserved regular post publishing flow, queue processing, multi-target dispatch, formatted mode fallback, and "Читать" button behavior.
+
 ## 1.10.3
 - test release for GitHub updater verification
 ## 1.10.2
