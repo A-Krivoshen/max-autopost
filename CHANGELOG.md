@@ -1,4 +1,7 @@
 # Changelog
+## 1.10.4
+- fixed test send without image
+- test message now falls back to text-only when no valid image payload is available
 ## 1.10.3
 - test release for GitHub updater verification
 ## 1.10.2

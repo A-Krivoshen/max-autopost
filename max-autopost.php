@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.10.3
+ * Version: 1.10.4
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.10.3';
+    private const VERSION = '1.10.4';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
@@ -856,76 +856,105 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     /* ================= ADMIN ACTIONS ================= */
 
     public static function handle_send_test(): void {
-        if (!current_user_can('manage_options')) wp_die('Forbidden');
-        check_admin_referer('krv_max_send_test');
+    if (!current_user_can('manage_options')) wp_die('Forbidden');
+    check_admin_referer('krv_max_send_test');
 
-        $s = self::get_settings();
-        $token = self::token($s);
-        $targets = self::target_chat_ids($s);
+    $s = self::get_settings();
+    $token = self::token($s);
+    $targets = self::target_chat_ids($s);
 
-        if ($token === '' || empty($targets)) {
-            self::notice('error','Не задан token или chat_id.');
-            wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
-            exit;
-        }
-
-        $test_content = self::build_test_content($s);
-        $payload = ['text'=>(string)$test_content['text'],'notify'=>(bool)$s['notify']];
-        if (!empty($test_content['parse_mode'])) {
-            $payload['parse_mode'] = (string)$test_content['parse_mode'];
-        }
-        $attachments = [];
-
-        // Optional image for test message
-        if (!empty($s['include_image']) && function_exists('curl_init')) {
-            $mode = (string)($s['image_source_mode'] ?? 'post_or_site');
-            if (self::normalize_image_source_mode($mode) !== 'post_only') {
-                $site_icon = (int)get_option('site_icon');
-                if ($site_icon) {
-                    $file = get_attached_file($site_icon);
-                    if (is_string($file) && $file && file_exists($file)) {
-                        $up = self::upload($file, $token, 0);
-                        if ($up !== false) {
-                            $attachments[] = ['type'=>'image','payload'=>$up];
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!empty($s['add_button'])) {
-            $attachments[] = [
-                'type'=>'inline_keyboard',
-                'payload'=>[
-                    'buttons'=>[[[
-                        'type'=>'link',
-                        'text'=>(string)$s['button_text'],
-                        'url'=>home_url('/'),
-                    ]]],
-                ],
-            ];
-        }
-
-        if (!empty($attachments)) $payload['attachments'] = $attachments;
-
-        $dispatch = self::dispatch_to_targets(
-            $payload,
-            $targets,
-            $token,
-            0,
-            (bool)$s['debug'],
-            (string)$test_content['mode'],
-            (string)$test_content['plain_fallback']
-        );
-        if ($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success') {
-            update_option(self::WORKER_ENABLED_OPT, 1, false);
-        }
-        $notice_type = $dispatch['status'] === 'error' ? 'error' : ($dispatch['status'] === 'partial_success' ? 'warning' : 'success');
-        self::notice($notice_type, 'Тест: '.$dispatch['message']);
-
+    if ($token === '' || empty($targets)) {
+        self::notice('error','Не задан token или chat_id.');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
         exit;
     }
+
+    $test_content = self::build_test_content($s);
+    $payload = [
+        'text'   => (string)$test_content['text'],
+        'notify' => (bool)$s['notify'],
+    ];
+
+    if (!empty($test_content['parse_mode'])) {
+        $payload['parse_mode'] = (string)$test_content['parse_mode'];
+    }
+
+    $attachments = [];
+    $test_has_image = false;
+    $test_send_mode = 'test_text_only';
+
+    // Optional image for test message
+    if (!empty($s['include_image']) && function_exists('curl_init')) {
+        $mode = (string)($s['image_source_mode'] ?? 'post_or_site');
+        if (self::normalize_image_source_mode($mode) !== 'post_only') {
+            $site_icon = (int)get_option('site_icon');
+            if ($site_icon) {
+                $file = get_attached_file($site_icon);
+                if (is_string($file) && $file && file_exists($file)) {
+                    $up = self::upload($file, $token, 0);
+                    if ($up !== false) {
+                        $attachments[] = [
+                            'type'    => 'image',
+                            'payload' => $up,
+                        ];
+                        $test_has_image = true;
+                    } else {
+                        self::log('test_image_skip', 0, 0, 'Upload тестового изображения не удался, тест отправлен как text-only');
+                    }
+                } else {
+                    self::log('test_image_skip', 0, 0, 'Файл site_icon не найден, тест отправлен как text-only');
+                }
+            } else {
+                self::log('test_image_skip', 0, 0, 'site_icon не задан, тест отправлен как text-only');
+            }
+        } else {
+            self::log('test_image_skip', 0, 0, 'Режим post_only для теста без поста, тест отправлен как text-only');
+        }
+    }
+
+    if ($test_has_image && !empty($s['add_button'])) {
+        $attachments[] = [
+            'type' => 'inline_keyboard',
+            'payload' => [
+                'buttons' => [[[
+                    'type' => 'link',
+                    'text' => (string)$s['button_text'],
+                    'url'  => home_url('/'),
+                ]]],
+            ],
+        ];
+    }
+
+    if ($test_has_image && !empty($attachments)) {
+        $payload['attachments'] = $attachments;
+        $test_send_mode = 'test_with_image';
+    }
+
+    self::log('test_send_mode', 0, 0, $test_send_mode);
+
+    $dispatch = self::dispatch_to_targets(
+        $payload,
+        $targets,
+        $token,
+        0,
+        (bool)$s['debug'],
+        (string)$test_content['mode'],
+        (string)$test_content['plain_fallback']
+    );
+
+    if ($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success') {
+        update_option(self::WORKER_ENABLED_OPT, 1, false);
+    }
+
+    $notice_type = $dispatch['status'] === 'error'
+        ? 'error'
+        : ($dispatch['status'] === 'partial_success' ? 'warning' : 'success');
+
+    self::notice($notice_type, 'Тест: '.$dispatch['message']);
+
+    wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
+    exit;
+}
 
     public static function handle_run_queue(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
