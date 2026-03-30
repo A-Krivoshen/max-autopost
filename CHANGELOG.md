@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.9.2
+- Moved GitHub update-checker initialization to a dedicated include class (`includes/class-krv-max-github-updater.php`).
+- Added vendor placeholder doc for updater library path (`lib/plugin-update-checker/README.md`).
+- Kept all update safeguards (missing file/class fallback, no-fatal behavior, one-time init, ZIP release assets filter).
+
+## 1.9.1
+- Added GitHub-based plugin updates via YahnisElsts/plugin-update-checker.
+- Added `Update URI` metadata to the plugin header for external update compatibility.
+- Added safe update-checker bootstrap with file/class guards and one-time initialization.
+- Enabled GitHub Release assets support with ZIP asset filter (`/\.zip($|[?&#])/i`).
+- If updater library is missing, plugin continues to work normally without auto-update checks.
+
+## 1.9.0
+- Added multi-target delivery for MAX: one post can now be sent to multiple chat IDs (channels and/or group chats).
+- Kept backward compatibility: existing single `chat_id` setting remains the primary target and continues to work unchanged.
+- Added `additional_chat_ids` setting (one value per line) with trim/sanitize, duplicate removal, and empty-line filtering.
+- Refactored dispatcher flow to iterate targets sequentially and continue after per-target failures.
+- Added aggregate delivery outcomes: `success`, `partial_success`, `error`.
+- Added per-target delivery result meta (`_krv_max_target_results`) with `chat_id`, `status`, `message_id`, `error`.
+- Updated queue UI with target result summary plus `partial_success` filter/counter.
+- Updated test-send action to send to all configured targets.
+- Updated Help tab text for channel/group/multi-target usage and chat ID list format.
+
 ## 1.8.9
 - Added support for `define('KRV_MAX_CHAT_ID', '...')` so Chat ID can be stored in `wp-config.php` instead of the database.
 - Reused the new helper in test-send and live post sending to ensure one consistent Chat ID source.
