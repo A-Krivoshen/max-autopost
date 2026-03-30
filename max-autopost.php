@@ -2,12 +2,14 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.8.9
+ * Version: 1.10.1
  * Author: Dr.Slon
  * Requires PHP: 8.0
+ * Update URI: https://github.com/A-Krivoshen/max-autopost/
  */
 
 if (!defined('ABSPATH')) exit;
+require_once __DIR__ . '/includes/class-krv-max-github-updater.php';
 
 final class KRV_MAX_Autopost {
 
@@ -18,15 +20,17 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.8.9';
+    private const VERSION = '1.10.1';
+    private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
 
-    private const META_STATUS   = '_krv_max_status';   // queued|sent|error
+    private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
     private const META_ERROR    = '_krv_max_error';
     private const META_ATTEMPTS = '_krv_max_attempts';
     private const META_NEXTTRY  = '_krv_max_next_try';
     private const META_QUEUEDAT = '_krv_max_queued_at';
     private const META_QSTAMP   = '_krv_max_queue_stamp';
     private const META_SENTHASH = '_krv_max_sent_hash';
+    private const META_TARGET_RESULTS = '_krv_max_target_results';
 
     private const META_DISABLE  = '_krv_max_disable';
     private const META_OVERRIDE = '_krv_max_override';
@@ -47,6 +51,7 @@ final class KRV_MAX_Autopost {
 
     public static function init(): void {
         self::maybe_handle_upgrade();
+        self::init_update_checker();
 
         add_filter('cron_schedules', [__CLASS__, 'cron_schedules']);
 
@@ -72,6 +77,11 @@ final class KRV_MAX_Autopost {
 
         // Register row/bulk hooks after all CPTs are registered.
         add_action('init', [__CLASS__, 'register_post_type_hooks'], 20);
+    }
+
+    private static function init_update_checker(): void {
+        if (!class_exists('KRV_MAX_GitHub_Updater')) return;
+        KRV_MAX_GitHub_Updater::init(self::UPDATE_REPO_URL, __FILE__, 'max-autopost');
     }
 
     public static function register_post_type_hooks(): void {
@@ -172,11 +182,13 @@ final class KRV_MAX_Autopost {
         return [
             'token'         => '',
             'chat_id'       => '',
+            'additional_chat_ids' => '',
             'include_image' => 1,
             'image_source_mode' => 'post_or_site',
             'add_button'    => 1,
             'button_text'   => 'Читать',
             'max_text_limit' => self::MAX_TEXT,
+            'message_format' => 'plain_text',
             'publish_custom_fields' => 0,
             'enabled_post_types'    => ['post'],
             'custom_fields_map'     => '',
@@ -205,7 +217,8 @@ final class KRV_MAX_Autopost {
 
         $out = [];
         $out['token']   = isset($in['token']) ? trim((string)$in['token']) : $d['token'];
-        $out['chat_id'] = isset($in['chat_id']) ? trim((string)$in['chat_id']) : $d['chat_id'];
+        $out['chat_id'] = self::sanitize_chat_id(isset($in['chat_id']) ? (string)$in['chat_id'] : $d['chat_id']);
+        $out['additional_chat_ids'] = self::normalize_chat_ids_text(isset($in['additional_chat_ids']) ? (string)$in['additional_chat_ids'] : $d['additional_chat_ids']);
 
         $out['include_image'] = !empty($in['include_image']) ? 1 : 0;
 
@@ -219,6 +232,8 @@ final class KRV_MAX_Autopost {
 
         $text_limit = isset($in['max_text_limit']) ? (int)$in['max_text_limit'] : (int)$d['max_text_limit'];
         $out['max_text_limit'] = self::normalize_text_limit($text_limit);
+        $format = isset($in['message_format']) ? sanitize_key((string)$in['message_format']) : (string)$d['message_format'];
+        $out['message_format'] = self::normalize_message_format($format);
 
         $out['publish_custom_fields'] = !empty($in['publish_custom_fields']) ? 1 : 0;
 
@@ -247,9 +262,31 @@ final class KRV_MAX_Autopost {
 
     private static function chat_id(array $s): string {
         if (defined('KRV_MAX_CHAT_ID') && is_string(KRV_MAX_CHAT_ID) && trim(KRV_MAX_CHAT_ID) !== '') {
-            return trim(KRV_MAX_CHAT_ID);
+            return self::sanitize_chat_id((string)KRV_MAX_CHAT_ID);
         }
-        return (string)$s['chat_id'];
+        return self::sanitize_chat_id((string)$s['chat_id']);
+    }
+
+    private static function target_chat_ids(array $s): array {
+        $targets = [];
+
+        $primary = self::chat_id($s);
+        if ($primary !== '') {
+            $targets[] = $primary;
+        }
+
+        $extra = self::normalize_chat_ids_text((string)($s['additional_chat_ids'] ?? ''));
+        if ($extra !== '') {
+            foreach (preg_split('/\r\n|\r|\n/', $extra) ?: [] as $row) {
+                $id = self::sanitize_chat_id((string)$row);
+                if ($id !== '') {
+                    $targets[] = $id;
+                }
+            }
+        }
+
+        $targets = array_values(array_unique($targets));
+        return array_values(array_filter($targets, static fn($id) => $id !== ''));
     }
 
     /* ================= ADMIN UI ================= */
@@ -279,7 +316,7 @@ final class KRV_MAX_Autopost {
         $tab = isset($_GET['tab']) ? sanitize_key((string)$_GET['tab']) : 'settings';
         $s = self::get_settings();
 
-        echo '<div class="wrap"><h1>MAX Autopost (Free) 1.8.9</h1>';
+        echo '<div class="wrap"><h1>MAX Autopost (Free) ' . esc_html(self::VERSION) . '</h1>';
         echo '<h2 class="nav-tab-wrapper">';
         echo self::tab_link('settings','Настройки',$tab);
         echo self::tab_link('queue','Очередь',$tab);
@@ -325,8 +362,12 @@ final class KRV_MAX_Autopost {
         echo '<tr><th>Token</th><td><input type="password" class="regular-text" name="'.esc_attr(self::OPT).'[token]" value="'.esc_attr($s['token']).'">';
         echo '<p class="description">Можно вынести токен в wp-config.php: <code>define(\'KRV_MAX_TOKEN\', \'...\');</code></p></td></tr>';
 
-        echo '<tr><th>Chat ID</th><td><input type="text" class="regular-text" name="'.esc_attr(self::OPT).'[chat_id]" value="'.esc_attr($s['chat_id']).'">';
+        echo '<tr><th>Основной Chat ID</th><td><input type="text" class="regular-text" name="'.esc_attr(self::OPT).'[chat_id]" value="'.esc_attr($s['chat_id']).'">';
         echo '<p class="description">Можно вынести Chat ID в wp-config.php: <code>define(\'KRV_MAX_CHAT_ID\', \'...\');</code></p></td></tr>';
+        echo '<tr><th>Дополнительные Chat ID</th><td><textarea name="'.esc_attr(self::OPT).'[additional_chat_ids]" class="large-text code" rows="5" placeholder="123456
+-100987654
+chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
+        echo '<p class="description">По одному значению на строку. Поддерживаются ID каналов и групповых чатов MAX. Пустые строки игнорируются, дубликаты убираются автоматически.</p></td></tr>';
 
         echo '<tr><th>Картинка</th><td>';
         echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[include_image]" value="1" '.checked((int)$s['include_image'],1,false).'> Включить изображение</label>';
@@ -351,6 +392,15 @@ final class KRV_MAX_Autopost {
         echo '<tr><th>Длина текста</th><td>';
         echo '<input type="number" min="'.esc_attr((string)self::MIN_TEXT).'" max="'.esc_attr((string)self::MAX_TEXT).'" step="1" name="'.esc_attr(self::OPT).'[max_text_limit]" value="'.esc_attr((string)(int)$s['max_text_limit']).'" style="width:130px;">';
         echo '<p class="description">Максимальная длина текста для MAX: от '.esc_html((string)self::MIN_TEXT).' до '.esc_html((string)self::MAX_TEXT).' символов.</p>';
+        echo '</td></tr>';
+
+        echo '<tr><th>Формат сообщения</th><td>';
+        echo '<select name="'.esc_attr(self::OPT).'[message_format]">';
+        echo '<option value="plain_text" '.selected((string)$s['message_format'], 'plain_text', false).'>plain text</option>';
+        echo '<option value="formatted" '.selected((string)$s['message_format'], 'formatted', false).'>formatted</option>';
+        echo '<option value="excerpt_plain" '.selected((string)$s['message_format'], 'excerpt_plain', false).'>excerpt plain</option>';
+        echo '</select>';
+        echo '<p class="description">plain text — максимально совместимый режим; formatted — сохраняет базовое форматирование; excerpt plain — безопасный короткий анонс без HTML.</p>';
         echo '</td></tr>';
 
         $post_types = self::available_post_types();
@@ -417,7 +467,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $status_color = $worker_on ? '#2e7d32' : '#b71c1c';
 
         $status_filter = isset($_GET['qstatus']) ? sanitize_key((string)$_GET['qstatus']) : 'all';
-        if (!in_array($status_filter, ['all', 'queued', 'error', 'sent'], true)) {
+        if (!in_array($status_filter, ['all', 'queued', 'error', 'partial_success', 'sent'], true)) {
             $status_filter = 'all';
         }
 
@@ -466,7 +516,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         echo '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 12px;">';
         echo '<strong>Фильтр очереди:</strong>';
-        foreach (['all' => 'Все', 'queued' => 'queued', 'error' => 'error', 'sent' => 'sent'] as $key => $label) {
+        foreach (['all' => 'Все', 'queued' => 'queued', 'error' => 'error', 'partial_success' => 'partial_success', 'sent' => 'sent'] as $key => $label) {
             $url = add_query_arg([
                 'page' => 'krv-max-autopost',
                 'tab' => 'queue',
@@ -481,11 +531,12 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             'all' => self::queue_status_count(null),
             'queued' => self::queue_status_count('queued'),
             'error' => self::queue_status_count('error'),
+            'partial_success' => self::queue_status_count('partial_success'),
             'sent' => self::queue_status_count('sent'),
         ];
 
         echo '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 14px;">';
-        foreach (['all' => 'Все', 'queued' => 'queued', 'error' => 'error', 'sent' => 'sent'] as $key => $label) {
+        foreach (['all' => 'Все', 'queued' => 'queued', 'error' => 'error', 'partial_success' => 'partial_success', 'sent' => 'sent'] as $key => $label) {
             $url = add_query_arg([
                 'page' => 'krv-max-autopost',
                 'tab' => 'queue',
@@ -516,7 +567,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         $q = new WP_Query($query_args);
 
-        echo '<table class="widefat striped"><thead><tr><th>Пост</th><th>Тип</th><th>Статус</th><th>Попытки</th><th>Next try</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>';
+        echo '<table class="widefat striped"><thead><tr><th>Пост</th><th>Тип</th><th>Статус</th><th>Попытки</th><th>Next try</th><th>Результат по целям</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>';
         if ($q->have_posts()) {
             while ($q->have_posts()) {
                 $q->the_post();
@@ -525,6 +576,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 $att = (int)get_post_meta($id,self::META_ATTEMPTS,true);
                 $nt  = (int)get_post_meta($id,self::META_NEXTTRY,true);
                 $err = (string)get_post_meta($id,self::META_ERROR,true);
+                $results = get_post_meta($id, self::META_TARGET_RESULTS, true);
+                $targets_summary = self::target_results_summary($results);
 
                 echo '<tr>';
                 echo '<td><a href="'.esc_url(get_edit_post_link($id)).'">'.esc_html(get_the_title()).'</a></td>';
@@ -532,6 +585,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 echo '<td>'.esc_html($st ?: '-').'</td>';
                 echo '<td>'.esc_html((string)$att).'</td>';
                 echo '<td>'.esc_html($nt ? wp_date('Y-m-d H:i:s',$nt) : '-').'</td>';
+                echo '<td title="'.esc_attr($targets_summary).'" style="max-width:420px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'.esc_html($targets_summary).'</td>';
                 echo '<td title="'.esc_attr($err).'" style="max-width:520px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'.esc_html($err).'</td>';
 
                 $send_url = wp_nonce_url(admin_url('admin-post.php?action=krv_max_send_now&post_id='.(int)$id), 'krv_max_send_now_'.(int)$id);
@@ -542,7 +596,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             }
             wp_reset_postdata();
         } else {
-            echo '<tr><td colspan="7">Очередь пуста.</td></tr>';
+            echo '<tr><td colspan="8">Очередь пуста.</td></tr>';
         }
         echo '</tbody></table>';
     }
@@ -585,6 +639,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<li>Отправьте любое сообщение в эту группу (чтобы чат появился в списке API).</li>';
         echo '<li>Ниже нажмите кнопку поиска — плагин попробует показать доступные Chat ID.</li>';
         echo '</ol>';
+        echo '<p><strong>Теперь плагин поддерживает отправку:</strong> в канал, в группу/групповой чат и одновременно в несколько каналов/групп.</p>';
+        echo '<p><strong>Формат дополнительных Chat ID:</strong> по одному значению на строку (например: <code>123456</code>, <code>-100987654</code>, <code>chat_abcd123</code>).</p>';
         echo '<p><strong>Важно:</strong> если список пуст, проверьте права бота в группе и отправьте тестовое сообщение в чат ещё раз.</p>';
 
         $token = self::token($s);
@@ -684,6 +740,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     private static function queue_post(int $post_id, string $why=''): void {
         update_post_meta($post_id,self::META_STATUS,'queued');
         delete_post_meta($post_id,self::META_ERROR);
+        delete_post_meta($post_id,self::META_TARGET_RESULTS);
         update_post_meta($post_id,self::META_ATTEMPTS,0);
         $now = time();
         update_post_meta($post_id,self::META_NEXTTRY,$now);
@@ -750,10 +807,21 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             foreach ($q->posts as $p) {
                 $post_id = (int)$p->ID;
                 $res = self::send($post_id);
+                update_post_meta($post_id, self::META_TARGET_RESULTS, $res['results']);
 
-                if ($res === true) {
+                if ($res['status'] === 'success') {
                     update_post_meta($post_id,self::META_STATUS,'sent');
                     delete_post_meta($post_id,self::META_ERROR);
+                    delete_post_meta($post_id,self::META_ATTEMPTS);
+                    delete_post_meta($post_id,self::META_NEXTTRY);
+                    delete_post_meta($post_id,self::META_QUEUEDAT);
+                    delete_post_meta($post_id,self::META_QSTAMP);
+                    continue;
+                }
+
+                if ($res['status'] === 'partial_success') {
+                    update_post_meta($post_id,self::META_STATUS,'partial_success');
+                    update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
                     delete_post_meta($post_id,self::META_ATTEMPTS);
                     delete_post_meta($post_id,self::META_NEXTTRY);
                     delete_post_meta($post_id,self::META_QUEUEDAT);
@@ -764,7 +832,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 $attempts = (int)get_post_meta($post_id,self::META_ATTEMPTS,true);
                 $attempts++;
                 update_post_meta($post_id,self::META_ATTEMPTS,$attempts);
-                update_post_meta($post_id,self::META_ERROR,(string)$res);
+                update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
 
                 $delay = self::retry_delay($attempts);
                 if ($delay === null) {
@@ -793,15 +861,19 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         $s = self::get_settings();
         $token = self::token($s);
-        $chat_id = self::chat_id($s);
+        $targets = self::target_chat_ids($s);
 
-        if ($token === '' || $chat_id === '') {
+        if ($token === '' || empty($targets)) {
             self::notice('error','Не задан token или chat_id.');
             wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
             exit;
         }
 
-        $payload = ['text'=>"MAX Autopost: тест\n\n".home_url('/'),'notify'=>(bool)$s['notify']];
+        $test_content = self::build_test_content($s);
+        $payload = ['text'=>(string)$test_content['text'],'notify'=>(bool)$s['notify']];
+        if (!empty($test_content['parse_mode'])) {
+            $payload['parse_mode'] = (string)$test_content['parse_mode'];
+        }
         $attachments = [];
 
         // Optional image for test message
@@ -836,11 +908,20 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         if (!empty($attachments)) $payload['attachments'] = $attachments;
 
-        $ok = self::api($payload, $chat_id, $token, 0, (bool)$s['debug']);
-        if ($ok === true) {
+        $dispatch = self::dispatch_to_targets(
+            $payload,
+            $targets,
+            $token,
+            0,
+            (bool)$s['debug'],
+            (string)$test_content['mode'],
+            (string)$test_content['plain_fallback']
+        );
+        if ($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success') {
             update_option(self::WORKER_ENABLED_OPT, 1, false);
         }
-        self::notice($ok===true?'success':'error', $ok===true?'Тест отправлен. Автоотправка очереди включена.':'Тест не отправился: '.self::short((string)$ok));
+        $notice_type = $dispatch['status'] === 'error' ? 'error' : ($dispatch['status'] === 'partial_success' ? 'warning' : 'success');
+        self::notice($notice_type, 'Тест: '.$dispatch['message']);
 
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
         exit;
@@ -900,15 +981,28 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         check_admin_referer('krv_max_send_now_'.$post_id);
 
         $res = self::send($post_id);
+        update_post_meta($post_id, self::META_TARGET_RESULTS, $res['results']);
 
-        if ($res === true) {
+        if ($res['status'] === 'success') {
             update_post_meta($post_id,self::META_STATUS,'sent');
             delete_post_meta($post_id,self::META_ERROR);
+            delete_post_meta($post_id,self::META_ATTEMPTS);
+            delete_post_meta($post_id,self::META_NEXTTRY);
+            delete_post_meta($post_id,self::META_QUEUEDAT);
+            delete_post_meta($post_id,self::META_QSTAMP);
             self::notice('success','Отправлено в MAX.');
+        } elseif ($res['status'] === 'partial_success') {
+            update_post_meta($post_id,self::META_STATUS,'partial_success');
+            update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
+            delete_post_meta($post_id,self::META_ATTEMPTS);
+            delete_post_meta($post_id,self::META_NEXTTRY);
+            delete_post_meta($post_id,self::META_QUEUEDAT);
+            delete_post_meta($post_id,self::META_QSTAMP);
+            self::notice('warning','Частично отправлено: '.self::short((string)$res['message']));
         } else {
             update_post_meta($post_id,self::META_STATUS,'error');
-            update_post_meta($post_id,self::META_ERROR,(string)$res);
-            self::notice('error','Ошибка: '.self::short((string)$res));
+            update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
+            self::notice('error','Ошибка: '.self::short((string)$res['message']));
         }
 
         wp_safe_redirect(wp_get_referer() ?: admin_url('edit.php'));
@@ -993,24 +1087,28 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     /* ================= CORE: send / upload / api ================= */
 
-    private static function send(int $post_id) {
+    private static function send(int $post_id): array {
         $s = self::get_settings();
         $token = self::token($s);
-        $chat_id = self::chat_id($s);
+        $targets = self::target_chat_ids($s);
 
-        if ($token === '' || $chat_id === '') return 'Не задан token/chat_id';
+        if ($token === '' || empty($targets)) return ['status'=>'error', 'message'=>'Не задан token/chat_id', 'results'=>[]];
 
         $post = get_post($post_id);
-        if (!$post) return 'Пост не найден';
-        if (!self::is_supported_post_type($post->post_type)) return 'Тип записи не поддерживается';
-        if ($post->post_status !== 'publish') return 'Можно отправлять только опубликованные материалы';
+        if (!$post) return ['status'=>'error', 'message'=>'Пост не найден', 'results'=>[]];
+        if (!self::is_supported_post_type($post->post_type)) return ['status'=>'error', 'message'=>'Тип записи не поддерживается', 'results'=>[]];
+        if ($post->post_status !== 'publish') return ['status'=>'error', 'message'=>'Можно отправлять только опубликованные материалы', 'results'=>[]];
 
-        if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return 'Отключено в метабоксе.';
+        if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return ['status'=>'error', 'message'=>'Отключено в метабоксе.', 'results'=>[]];
 
-        $text = self::build_text($post_id, $s);
+        $message = self::build_message_content($post_id, $s);
+        $text = (string)$message['text'];
         $url  = get_permalink($post_id);
 
         $payload = ['text'=>$text,'notify'=>(bool)$s['notify']];
+        if (!empty($message['parse_mode'])) {
+            $payload['parse_mode'] = (string)$message['parse_mode'];
+        }
         $attachments = [];
 
         // IMAGE first
@@ -1018,7 +1116,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             $file = self::resolve_image_file($post_id, $s);
             if ($file) {
                 $up = self::upload($file, $token, $post_id);
-                if ($up === false) return 'Upload failed (see logs)';
+                if ($up === false) return ['status'=>'error', 'message'=>'Upload failed (see logs)', 'results'=>[]];
                 $attachments[] = ['type'=>'image','payload'=>$up]; // IMPORTANT: full JSON
             }
         }
@@ -1047,18 +1145,30 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             'has_button'=>(int)!empty($s['add_button']),
             'button_text'=>(string)$s['button_text'],
             'url'=>$url,
+            'targets'=>$targets,
             'post_modified_gmt'=>get_post_modified_time('U', true, $post_id),
         ];
         $hash = hash('sha256', wp_json_encode($sig, JSON_UNESCAPED_UNICODE));
         $prev = (string)get_post_meta($post_id,self::META_SENTHASH,true);
-        if ($prev && hash_equals($prev,$hash)) return true;
-
-        $res = self::api($payload, $chat_id, $token, $post_id, (bool)$s['debug']);
-        if ($res === true) {
-            update_post_meta($post_id,self::META_SENTHASH,$hash);
-            return true;
+        if ($prev && hash_equals($prev,$hash)) {
+            $prev_results = get_post_meta($post_id, self::META_TARGET_RESULTS, true);
+            $prev_results = is_array($prev_results) ? $prev_results : [];
+            return ['status'=>'success', 'message'=>'Уже отправлено ранее (dedupe).', 'results'=>$prev_results];
         }
-        return $res;
+
+        $dispatch = self::dispatch_to_targets(
+            $payload,
+            $targets,
+            $token,
+            $post_id,
+            (bool)$s['debug'],
+            (string)$message['mode'],
+            (string)$message['plain_fallback']
+        );
+        if ($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success') {
+            update_post_meta($post_id,self::META_SENTHASH,$hash);
+        }
+        return $dispatch;
     }
 
     /**
@@ -1243,7 +1353,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return $out;
     }
 
-    private static function api(array $payload, string $chat_id, string $token, int $post_id, bool $debug) {
+    private static function api(array $payload, string $chat_id, string $token, int $post_id, bool $debug): array {
         $url = 'https://platform-api.max.ru/messages?chat_id=' . rawurlencode($chat_id);
 
         $r = wp_remote_post($url, [
@@ -1257,20 +1367,51 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         if (is_wp_error($r)) {
             $msg = $r->get_error_message();
-            self::log('send', 0, $post_id, 'WP_Error: '.$msg);
-            return $msg;
+            self::log('send', 0, $post_id, '[chat_id='.$chat_id.'] WP_Error: '.$msg);
+            return ['ok'=>false, 'message'=>$msg, 'message_id'=>'', 'http'=>0];
         }
 
         $code = (int)wp_remote_retrieve_response_code($r);
         $body = (string)wp_remote_retrieve_body($r);
 
         if ($code >= 200 && $code < 300) {
-            if ($debug && $body !== '') self::log('send', $code, $post_id, 'Response: '.self::short($body));
-            return true;
+            if ($debug && $body !== '') self::log('send', $code, $post_id, '[chat_id='.$chat_id.'] Response: '.self::short($body));
+            $decoded = json_decode($body, true);
+            $message_id = '';
+            if (is_array($decoded)) {
+                foreach (['message_id', 'id', 'msg_id'] as $key) {
+                    if (!empty($decoded[$key])) {
+                        $message_id = (string)$decoded[$key];
+                        break;
+                    }
+                }
+            }
+            return ['ok'=>true, 'message'=>'success', 'message_id'=>$message_id, 'http'=>$code];
         }
 
-        self::log('send', $code, $post_id, 'HTTP '.$code.': '.self::short($body));
-        return 'HTTP '.$code.': '.self::short($body);
+        $error = 'HTTP '.$code.': '.self::short($body);
+        self::log('send', $code, $post_id, '[chat_id='.$chat_id.'] '.$error);
+        return ['ok'=>false, 'message'=>$error, 'message_id'=>'', 'http'=>$code];
+    }
+
+    private static function send_to_target_with_fallback(array $payload, string $chat_id, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
+        $primary = self::api($payload, $chat_id, $token, $post_id, $debug);
+        $primary['fallback_used'] = false;
+        $primary['parse_mode'] = (string)($payload['parse_mode'] ?? '');
+
+        if (!empty($primary['ok']) || $format_mode !== 'formatted') {
+            return $primary;
+        }
+
+        $fallback_payload = $payload;
+        unset($fallback_payload['parse_mode']);
+        $fallback_payload['text'] = $plain_fallback !== '' ? $plain_fallback : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings());
+
+        self::log('fallback', (int)($primary['http'] ?? 0), $post_id, '[chat_id='.$chat_id.'] formatted failed, fallback to plain text: '.self::short((string)($primary['message'] ?? 'unknown error')));
+        $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
+        $retry['fallback_used'] = true;
+        $retry['parse_mode'] = '';
+        return $retry;
     }
 
     /* ================= HELPERS ================= */
@@ -1318,6 +1459,106 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return $limit;
     }
 
+    private static function normalize_message_format(string $mode): string {
+        return in_array($mode, ['plain_text', 'formatted', 'excerpt_plain'], true) ? $mode : 'plain_text';
+    }
+
+    private static function sanitize_chat_id(string $chat_id): string {
+        return trim(sanitize_text_field($chat_id));
+    }
+
+    private static function normalize_chat_ids_text(string $raw): string {
+        $rows = preg_split('/\r\n|\r|\n/', $raw) ?: [];
+        $normalized = [];
+        foreach ($rows as $row) {
+            $id = self::sanitize_chat_id((string)$row);
+            if ($id !== '') {
+                $normalized[] = $id;
+            }
+        }
+        $normalized = array_values(array_unique($normalized));
+        return implode("\n", $normalized);
+    }
+
+    private static function dispatch_to_targets(array $payload, array $targets, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
+        $results = [];
+        $success = 0;
+
+        foreach ($targets as $chat_id) {
+            $chat_id = self::sanitize_chat_id((string)$chat_id);
+            if ($chat_id === '') {
+                continue;
+            }
+
+            $send = self::send_to_target_with_fallback($payload, $chat_id, $token, $post_id, $debug, $format_mode, $plain_fallback);
+            $row = [
+                'chat_id' => $chat_id,
+                'status' => !empty($send['ok']) ? 'success' : 'error',
+                'message_id' => (string)($send['message_id'] ?? ''),
+                'error' => !empty($send['ok']) ? '' : (string)($send['message'] ?? 'Unknown error'),
+            ];
+            $results[] = $row;
+            self::log_target_result($post_id, $row);
+            if ($debug) {
+                self::log('dispatch_debug', 0, $post_id, '[chat_id='.$chat_id.'] format_mode='.$format_mode.'; parse_mode='.(string)($send['parse_mode'] ?? '').'; fallback='.(int)!empty($send['fallback_used']));
+            }
+
+            if ($row['status'] === 'success') {
+                $success++;
+            }
+        }
+
+        $total = count($results);
+        if ($total === 0) {
+            return ['status'=>'error', 'message'=>'Нет валидных Chat ID для отправки.', 'results'=>[]];
+        }
+
+        if ($success === 0) {
+            return ['status'=>'error', 'message'=>'Не удалось отправить ни в один target (0/'.$total.').', 'results'=>$results];
+        }
+
+        if ($success < $total) {
+            return ['status'=>'partial_success', 'message'=>'Отправлено частично: '.$success.'/'.$total.' target.', 'results'=>$results];
+        }
+
+        return ['status'=>'success', 'message'=>'Успешно отправлено во все target: '.$success.'/'.$total.'.', 'results'=>$results];
+    }
+
+    private static function log_target_result(int $post_id, array $result): void {
+        $chat_id = (string)($result['chat_id'] ?? '');
+        $status = (string)($result['status'] ?? '');
+        $message_id = (string)($result['message_id'] ?? '');
+        $error = (string)($result['error'] ?? '');
+
+        $msg = '[chat_id='.$chat_id.'] status='.$status;
+        if ($message_id !== '') {
+            $msg .= '; message_id='.$message_id;
+        }
+        if ($error !== '') {
+            $msg .= '; error='.self::short($error);
+        } else {
+            $msg .= '; success';
+        }
+        self::log('dispatch', 0, $post_id, $msg);
+    }
+
+    private static function target_results_summary($results): string {
+        if (!is_array($results) || empty($results)) {
+            return '-';
+        }
+
+        $parts = [];
+        foreach ($results as $row) {
+            if (!is_array($row)) continue;
+            $chat_id = self::sanitize_chat_id((string)($row['chat_id'] ?? ''));
+            $status = sanitize_key((string)($row['status'] ?? ''));
+            if ($chat_id === '' || $status === '') continue;
+            $parts[] = $chat_id . ': ' . $status;
+        }
+
+        return !empty($parts) ? implode(' | ', $parts) : '-';
+    }
+
     private static function clean_publish_text(string $text): string {
         $text = str_replace(["
 ", "
@@ -1331,6 +1572,161 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
  */u', "
 ", $text);
         return trim((string)$text);
+    }
+
+    private static function build_message_content(int $post_id, array $settings): array {
+        $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
+
+        if ($mode === 'formatted') {
+            $formatted = self::build_formatted_text($post_id, $settings);
+            $plain = self::build_text($post_id, array_merge($settings, ['message_format' => 'plain_text']));
+            return [
+                'mode' => 'formatted',
+                'text' => $formatted,
+                'parse_mode' => 'HTML',
+                'plain_fallback' => $plain,
+            ];
+        }
+
+        if ($mode === 'excerpt_plain') {
+            $excerpt = self::build_excerpt_plain_text($post_id, $settings);
+            return [
+                'mode' => 'excerpt_plain',
+                'text' => $excerpt,
+                'parse_mode' => '',
+                'plain_fallback' => $excerpt,
+            ];
+        }
+
+        $plain = self::build_text($post_id, $settings);
+        return [
+            'mode' => 'plain_text',
+            'text' => $plain,
+            'parse_mode' => '',
+            'plain_fallback' => $plain,
+        ];
+    }
+
+    private static function build_test_content(array $settings): array {
+        $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
+        $url = home_url('/');
+
+        if ($mode === 'formatted') {
+            $formatted = "<strong>MAX Autopost: тест форматирования</strong><br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>";
+            $plain = "MAX Autopost: тест форматирования\n\nКурсивный текст\nСсылка: ".$url."\n\n• Элемент списка 1\n• Элемент списка 2\n\ncode_example()";
+            return ['mode'=>'formatted', 'text'=>$formatted, 'parse_mode'=>'HTML', 'plain_fallback'=>$plain];
+        }
+
+        $plain = "MAX Autopost: тест\n\n".$url;
+        return ['mode'=>$mode, 'text'=>$plain, 'parse_mode'=>'', 'plain_fallback'=>$plain];
+    }
+
+    private static function build_excerpt_plain_text(int $post_id, array $settings): string {
+        $title = self::clean_publish_text((string)get_the_title($post_id));
+        $excerpt = get_the_excerpt($post_id);
+        if ($excerpt === '') {
+            $excerpt = wp_strip_all_tags(strip_shortcodes((string)get_post_field('post_content', $post_id)));
+        }
+        $excerpt = self::clean_publish_text((string)$excerpt);
+        $excerpt = wp_trim_words($excerpt, 55, '…');
+        return self::limit_text(trim($title . "\n\n" . $excerpt), $settings);
+    }
+
+    private static function build_formatted_text(int $post_id, array $settings): string {
+        $override = trim((string)get_post_meta($post_id, self::META_OVERRIDE, true));
+        $source = $override !== '' ? $override : (string)get_post_field('post_content', $post_id);
+        $source = str_replace(["\r\n", "\r"], "\n", $source);
+        $normalized = self::normalize_wp_html_for_max($source);
+        $title = esc_html(self::clean_publish_text((string)get_the_title($post_id)));
+        $body = trim($normalized);
+
+        $composed = '<strong>' . $title . '</strong>';
+        if ($body !== '') {
+            $composed .= '<br><br>' . $body;
+        }
+
+        $with_fields = self::append_custom_fields_formatted($composed, $post_id, $settings);
+        $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
+        if (mb_strlen(wp_strip_all_tags($with_fields), 'UTF-8') > $max) {
+            return self::limit_text(wp_strip_all_tags($with_fields), $settings);
+        }
+        return $with_fields;
+    }
+
+    private static function normalize_wp_html_for_max(string $html): string {
+        $html = preg_replace('/<!--\s*\/?wp:.*?-->/is', '', $html);
+        $html = preg_replace('/<\/?(div|section|article)[^>]*class="[^"]*wp-block[^"]*"[^>]*>/i', '', $html);
+        $html = str_replace(['<p>&nbsp;</p>', '<p> </p>'], '', $html);
+        $html = self::convert_html_lists_to_text($html);
+
+        $allowed = [
+            'b' => [],
+            'strong' => [],
+            'i' => [],
+            'em' => [],
+            'a' => ['href' => true, 'title' => true, 'target' => true, 'rel' => true],
+            'code' => [],
+            'pre' => [],
+            'br' => [],
+            'p' => [],
+            'ul' => [],
+            'ol' => [],
+            'li' => [],
+            'blockquote' => [],
+        ];
+
+        $html = wp_kses($html, $allowed);
+        $html = preg_replace('/<(\/?)p>/i', '<$1p>', $html);
+        $html = preg_replace('/(?:<br\s*\/?>\s*){3,}/i', '<br><br>', $html);
+        return trim((string)$html);
+    }
+
+    private static function convert_html_lists_to_text(string $html): string {
+        $html = preg_replace_callback('/<ul[^>]*>(.*?)<\/ul>/is', static function($m) {
+            $items = [];
+            if (preg_match_all('/<li[^>]*>(.*?)<\/li>/is', (string)$m[1], $li_matches)) {
+                foreach ($li_matches[1] as $raw) {
+                    $items[] = '• ' . trim(wp_strip_all_tags((string)$raw));
+                }
+            }
+            return !empty($items) ? '<p>' . implode("<br>", $items) . '</p>' : '';
+        }, $html);
+
+        $html = preg_replace_callback('/<ol[^>]*>(.*?)<\/ol>/is', static function($m) {
+            $items = [];
+            if (preg_match_all('/<li[^>]*>(.*?)<\/li>/is', (string)$m[1], $li_matches)) {
+                $i = 1;
+                foreach ($li_matches[1] as $raw) {
+                    $items[] = $i++ . '. ' . trim(wp_strip_all_tags((string)$raw));
+                }
+            }
+            return !empty($items) ? '<p>' . implode("<br>", $items) . '</p>' : '';
+        }, $html);
+
+        return $html;
+    }
+
+    private static function append_custom_fields_formatted(string $html, int $post_id, array $settings): string {
+        if (empty($settings['publish_custom_fields'])) {
+            return $html;
+        }
+
+        $fields = self::parse_custom_fields_map((string)($settings['custom_fields_map'] ?? ''));
+        if (empty($fields)) return $html;
+
+        $lines = [];
+        foreach ($fields as $field) {
+            $value = get_post_meta($post_id, $field['key'], true);
+            if (is_array($value)) $value = wp_json_encode($value, JSON_UNESCAPED_UNICODE);
+            $value = self::clean_publish_text((string)$value);
+            if ($value === '') continue;
+            $safe_value = esc_html($value);
+            $safe_label = esc_html((string)$field['label']);
+            $lines[] = $safe_label !== '' ? ('<strong>'.$safe_label.':</strong> '.$safe_value) : $safe_value;
+        }
+
+        if (empty($lines)) return $html;
+        return $html . '<br><br>' . implode('<br>', $lines);
     }
 
     private static function build_text(int $post_id, array $settings): string {
