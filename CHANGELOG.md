@@ -1,4 +1,8 @@
 # Changelog
+## 1.10.6
+- fixed test image payload validation
+- fixed formatted fallback to plain text without attachments
+- improved test send handling for invalid media payload
 ## 1.10.5
 - fixed test message length for MAX
 - test content is now long enough for text-only and formatted test sends

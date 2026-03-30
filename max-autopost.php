@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.10.5
+ * Version: 1.10.6
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.10.5';
+    private const VERSION = '1.10.6';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
@@ -855,7 +855,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     /* ================= ADMIN ACTIONS ================= */
 
-    public static function handle_send_test(): void {
+public static function handle_send_test(): void {
     if (!current_user_can('manage_options')) wp_die('Forbidden');
     check_admin_referer('krv_max_send_test');
 
@@ -883,7 +883,6 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     $test_has_image = false;
     $test_send_mode = 'test_text_only';
 
-    // Optional image for test message
     if (!empty($s['include_image']) && function_exists('curl_init')) {
         $mode = (string)($s['image_source_mode'] ?? 'post_or_site');
         if (self::normalize_image_source_mode($mode) !== 'post_only') {
@@ -892,14 +891,15 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 $file = get_attached_file($site_icon);
                 if (is_string($file) && $file && file_exists($file)) {
                     $up = self::upload($file, $token, 0);
-                    if ($up !== false) {
+
+                    if ($up !== false && self::has_media_payload_markers($up)) {
                         $attachments[] = [
                             'type'    => 'image',
                             'payload' => $up,
                         ];
                         $test_has_image = true;
                     } else {
-                        self::log('test_image_skip', 0, 0, 'Upload тестового изображения не удался, тест отправлен как text-only');
+                        self::log('test_image_skip', 0, 0, 'Upload вернул невалидный media payload, тест отправлен как text-only');
                     }
                 } else {
                     self::log('test_image_skip', 0, 0, 'Файл site_icon не найден, тест отправлен как text-only');
@@ -955,7 +955,6 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
     exit;
 }
-
     public static function handle_run_queue(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
         check_admin_referer('krv_max_run_queue');
@@ -1424,24 +1423,31 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     private static function send_to_target_with_fallback(array $payload, string $chat_id, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
-        $primary = self::api($payload, $chat_id, $token, $post_id, $debug);
-        $primary['fallback_used'] = false;
-        $primary['parse_mode'] = (string)($payload['parse_mode'] ?? '');
+    $primary = self::api($payload, $chat_id, $token, $post_id, $debug);
+    $primary['fallback_used'] = false;
+    $primary['parse_mode'] = (string)($payload['parse_mode'] ?? '');
 
-        if (!empty($primary['ok']) || $format_mode !== 'formatted') {
-            return $primary;
-        }
-
-        $fallback_payload = $payload;
-        unset($fallback_payload['parse_mode']);
-        $fallback_payload['text'] = $plain_fallback !== '' ? $plain_fallback : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings());
-
-        self::log('fallback', (int)($primary['http'] ?? 0), $post_id, '[chat_id='.$chat_id.'] formatted failed, fallback to plain text: '.self::short((string)($primary['message'] ?? 'unknown error')));
-        $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
-        $retry['fallback_used'] = true;
-        $retry['parse_mode'] = '';
-        return $retry;
+    if (!empty($primary['ok']) || $format_mode !== 'formatted') {
+        return $primary;
     }
+
+    $fallback_payload = [
+        'text'   => $plain_fallback !== '' ? $plain_fallback : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings()),
+        'notify' => (bool)($payload['notify'] ?? true),
+    ];
+
+    self::log(
+        'fallback',
+        (int)($primary['http'] ?? 0),
+        $post_id,
+        '[chat_id='.$chat_id.'] formatted failed, fallback to plain text without attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
+    );
+
+    $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
+    $retry['fallback_used'] = true;
+    $retry['parse_mode'] = '';
+    return $retry;
+}
 
     /* ================= HELPERS ================= */
     private static function supported_post_types(): array {
@@ -1508,7 +1514,23 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $normalized = array_values(array_unique($normalized));
         return implode("\n", $normalized);
     }
+private static function has_media_payload_markers($payload): bool {
+    if (!is_array($payload) || empty($payload)) {
+        return false;
+    }
 
+    if (!empty($payload['photos']) || !empty($payload['url']) || !empty($payload['token'])) {
+        return true;
+    }
+
+    foreach ($payload as $value) {
+        if (is_array($value) && self::has_media_payload_markers($value)) {
+            return true;
+        }
+    }
+
+    return false;
+}
     private static function dispatch_to_targets(array $payload, array $targets, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
         $results = [];
         $success = 0;
@@ -1636,7 +1658,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         ];
     }
 
-    private static function build_test_content(array $settings): array {
+private static function build_test_content(array $settings): array {
     $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
     $url = home_url('/');
 
@@ -1664,7 +1686,6 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         'plain_fallback' => $plain,
     ];
 }
-
     private static function build_excerpt_plain_text(int $post_id, array $settings): string {
         $title = self::clean_publish_text((string)get_the_title($post_id));
         $excerpt = get_the_excerpt($post_id);
