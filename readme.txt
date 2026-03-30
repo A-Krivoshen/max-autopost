@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.9.2
+Stable tag: 1.10.0
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,12 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.10.0 =
+* Добавлена настройка формата сообщения: `plain_text`, `formatted`, `excerpt_plain`.
+* Для `formatted` добавлена безопасная нормализация HTML (очистка Gutenberg-разметки, whitelist тегов, читаемые списки).
+* Если formatted-отправка не проходит API, плагин автоматически делает fallback на plain text и пишет событие в логи.
+* Тестовая отправка учитывает выбранный формат и в formatted-режиме отправляет демонстрацию форматирования.
+
 = 1.9.2 =
 * Инициализация GitHub updater вынесена в отдельный include-класс (`includes/class-krv-max-github-updater.php`).
 * Добавлен `lib/plugin-update-checker/README.md` с ожидаемым путём библиотеки и поведением fallback.

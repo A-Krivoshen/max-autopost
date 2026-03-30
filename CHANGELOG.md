@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.0
+- Added message format setting with modes: `plain_text`, `formatted`, `excerpt_plain`.
+- Implemented safe formatted-content pipeline for WordPress HTML (Gutenberg cleanup + allowed tags whitelist).
+- Added readable list conversion for formatted mode and safer paragraph/line-break normalization.
+- Added formatted-send fallback to plain text on API error, with explicit fallback logging.
+- Updated test-send to respect selected format and include formatting sample in formatted mode.
+- Preserved multi-target delivery, queue/manual flows, image/button sending and GitHub updater compatibility.
+
 ## 1.9.2
 - Moved GitHub update-checker initialization to a dedicated include class (`includes/class-krv-max-github-updater.php`).
 - Added vendor placeholder doc for updater library path (`lib/plugin-update-checker/README.md`).

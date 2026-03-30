@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.9.2
+ * Version: 1.10.0
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.9.2';
+    private const VERSION = '1.10.0';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
@@ -188,6 +188,7 @@ final class KRV_MAX_Autopost {
             'add_button'    => 1,
             'button_text'   => 'Читать',
             'max_text_limit' => self::MAX_TEXT,
+            'message_format' => 'plain_text',
             'publish_custom_fields' => 0,
             'enabled_post_types'    => ['post'],
             'custom_fields_map'     => '',
@@ -231,6 +232,8 @@ final class KRV_MAX_Autopost {
 
         $text_limit = isset($in['max_text_limit']) ? (int)$in['max_text_limit'] : (int)$d['max_text_limit'];
         $out['max_text_limit'] = self::normalize_text_limit($text_limit);
+        $format = isset($in['message_format']) ? sanitize_key((string)$in['message_format']) : (string)$d['message_format'];
+        $out['message_format'] = self::normalize_message_format($format);
 
         $out['publish_custom_fields'] = !empty($in['publish_custom_fields']) ? 1 : 0;
 
@@ -389,6 +392,15 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
         echo '<tr><th>Длина текста</th><td>';
         echo '<input type="number" min="'.esc_attr((string)self::MIN_TEXT).'" max="'.esc_attr((string)self::MAX_TEXT).'" step="1" name="'.esc_attr(self::OPT).'[max_text_limit]" value="'.esc_attr((string)(int)$s['max_text_limit']).'" style="width:130px;">';
         echo '<p class="description">Максимальная длина текста для MAX: от '.esc_html((string)self::MIN_TEXT).' до '.esc_html((string)self::MAX_TEXT).' символов.</p>';
+        echo '</td></tr>';
+
+        echo '<tr><th>Формат сообщения</th><td>';
+        echo '<select name="'.esc_attr(self::OPT).'[message_format]">';
+        echo '<option value="plain_text" '.selected((string)$s['message_format'], 'plain_text', false).'>plain text</option>';
+        echo '<option value="formatted" '.selected((string)$s['message_format'], 'formatted', false).'>formatted</option>';
+        echo '<option value="excerpt_plain" '.selected((string)$s['message_format'], 'excerpt_plain', false).'>excerpt plain</option>';
+        echo '</select>';
+        echo '<p class="description">plain text — максимально совместимый режим; formatted — сохраняет базовое форматирование; excerpt plain — безопасный короткий анонс без HTML.</p>';
         echo '</td></tr>';
 
         $post_types = self::available_post_types();
@@ -857,7 +869,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             exit;
         }
 
-        $payload = ['text'=>"MAX Autopost: тест\n\n".home_url('/'),'notify'=>(bool)$s['notify']];
+        $test_content = self::build_test_content($s);
+        $payload = ['text'=>(string)$test_content['text'],'notify'=>(bool)$s['notify']];
+        if (!empty($test_content['parse_mode'])) {
+            $payload['parse_mode'] = (string)$test_content['parse_mode'];
+        }
         $attachments = [];
 
         // Optional image for test message
@@ -892,7 +908,15 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         if (!empty($attachments)) $payload['attachments'] = $attachments;
 
-        $dispatch = self::dispatch_to_targets($payload, $targets, $token, 0, (bool)$s['debug']);
+        $dispatch = self::dispatch_to_targets(
+            $payload,
+            $targets,
+            $token,
+            0,
+            (bool)$s['debug'],
+            (string)$test_content['mode'],
+            (string)$test_content['plain_fallback']
+        );
         if ($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success') {
             update_option(self::WORKER_ENABLED_OPT, 1, false);
         }
@@ -1077,10 +1101,14 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return ['status'=>'error', 'message'=>'Отключено в метабоксе.', 'results'=>[]];
 
-        $text = self::build_text($post_id, $s);
+        $message = self::build_message_content($post_id, $s);
+        $text = (string)$message['text'];
         $url  = get_permalink($post_id);
 
         $payload = ['text'=>$text,'notify'=>(bool)$s['notify']];
+        if (!empty($message['parse_mode'])) {
+            $payload['parse_mode'] = (string)$message['parse_mode'];
+        }
         $attachments = [];
 
         // IMAGE first
@@ -1128,7 +1156,15 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             return ['status'=>'success', 'message'=>'Уже отправлено ранее (dedupe).', 'results'=>$prev_results];
         }
 
-        $dispatch = self::dispatch_to_targets($payload, $targets, $token, $post_id, (bool)$s['debug']);
+        $dispatch = self::dispatch_to_targets(
+            $payload,
+            $targets,
+            $token,
+            $post_id,
+            (bool)$s['debug'],
+            (string)$message['mode'],
+            (string)$message['plain_fallback']
+        );
         if ($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success') {
             update_post_meta($post_id,self::META_SENTHASH,$hash);
         }
@@ -1358,6 +1394,26 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return ['ok'=>false, 'message'=>$error, 'message_id'=>'', 'http'=>$code];
     }
 
+    private static function send_to_target_with_fallback(array $payload, string $chat_id, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
+        $primary = self::api($payload, $chat_id, $token, $post_id, $debug);
+        $primary['fallback_used'] = false;
+        $primary['parse_mode'] = (string)($payload['parse_mode'] ?? '');
+
+        if (!empty($primary['ok']) || $format_mode !== 'formatted') {
+            return $primary;
+        }
+
+        $fallback_payload = $payload;
+        unset($fallback_payload['parse_mode']);
+        $fallback_payload['text'] = $plain_fallback !== '' ? $plain_fallback : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings());
+
+        self::log('fallback', (int)($primary['http'] ?? 0), $post_id, '[chat_id='.$chat_id.'] formatted failed, fallback to plain text: '.self::short((string)($primary['message'] ?? 'unknown error')));
+        $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
+        $retry['fallback_used'] = true;
+        $retry['parse_mode'] = '';
+        return $retry;
+    }
+
     /* ================= HELPERS ================= */
     private static function supported_post_types(): array {
         $s = self::get_settings();
@@ -1403,6 +1459,10 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return $limit;
     }
 
+    private static function normalize_message_format(string $mode): string {
+        return in_array($mode, ['plain_text', 'formatted', 'excerpt_plain'], true) ? $mode : 'plain_text';
+    }
+
     private static function sanitize_chat_id(string $chat_id): string {
         return trim(sanitize_text_field($chat_id));
     }
@@ -1420,7 +1480,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return implode("\n", $normalized);
     }
 
-    private static function dispatch_to_targets(array $payload, array $targets, string $token, int $post_id, bool $debug): array {
+    private static function dispatch_to_targets(array $payload, array $targets, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
         $results = [];
         $success = 0;
 
@@ -1430,7 +1490,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 continue;
             }
 
-            $send = self::api($payload, $chat_id, $token, $post_id, $debug);
+            $send = self::send_to_target_with_fallback($payload, $chat_id, $token, $post_id, $debug, $format_mode, $plain_fallback);
             $row = [
                 'chat_id' => $chat_id,
                 'status' => !empty($send['ok']) ? 'success' : 'error',
@@ -1439,6 +1499,9 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             ];
             $results[] = $row;
             self::log_target_result($post_id, $row);
+            if ($debug) {
+                self::log('dispatch_debug', 0, $post_id, '[chat_id='.$chat_id.'] format_mode='.$format_mode.'; parse_mode='.(string)($send['parse_mode'] ?? '').'; fallback='.(int)!empty($send['fallback_used']));
+            }
 
             if ($row['status'] === 'success') {
                 $success++;
@@ -1509,6 +1572,161 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
  */u', "
 ", $text);
         return trim((string)$text);
+    }
+
+    private static function build_message_content(int $post_id, array $settings): array {
+        $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
+
+        if ($mode === 'formatted') {
+            $formatted = self::build_formatted_text($post_id, $settings);
+            $plain = self::build_text($post_id, array_merge($settings, ['message_format' => 'plain_text']));
+            return [
+                'mode' => 'formatted',
+                'text' => $formatted,
+                'parse_mode' => 'HTML',
+                'plain_fallback' => $plain,
+            ];
+        }
+
+        if ($mode === 'excerpt_plain') {
+            $excerpt = self::build_excerpt_plain_text($post_id, $settings);
+            return [
+                'mode' => 'excerpt_plain',
+                'text' => $excerpt,
+                'parse_mode' => '',
+                'plain_fallback' => $excerpt,
+            ];
+        }
+
+        $plain = self::build_text($post_id, $settings);
+        return [
+            'mode' => 'plain_text',
+            'text' => $plain,
+            'parse_mode' => '',
+            'plain_fallback' => $plain,
+        ];
+    }
+
+    private static function build_test_content(array $settings): array {
+        $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
+        $url = home_url('/');
+
+        if ($mode === 'formatted') {
+            $formatted = "<strong>MAX Autopost: тест форматирования</strong><br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>";
+            $plain = "MAX Autopost: тест форматирования\n\nКурсивный текст\nСсылка: ".$url."\n\n• Элемент списка 1\n• Элемент списка 2\n\ncode_example()";
+            return ['mode'=>'formatted', 'text'=>$formatted, 'parse_mode'=>'HTML', 'plain_fallback'=>$plain];
+        }
+
+        $plain = "MAX Autopost: тест\n\n".$url;
+        return ['mode'=>$mode, 'text'=>$plain, 'parse_mode'=>'', 'plain_fallback'=>$plain];
+    }
+
+    private static function build_excerpt_plain_text(int $post_id, array $settings): string {
+        $title = self::clean_publish_text((string)get_the_title($post_id));
+        $excerpt = get_the_excerpt($post_id);
+        if ($excerpt === '') {
+            $excerpt = wp_strip_all_tags(strip_shortcodes((string)get_post_field('post_content', $post_id)));
+        }
+        $excerpt = self::clean_publish_text((string)$excerpt);
+        $excerpt = wp_trim_words($excerpt, 55, '…');
+        return self::limit_text(trim($title . "\n\n" . $excerpt), $settings);
+    }
+
+    private static function build_formatted_text(int $post_id, array $settings): string {
+        $override = trim((string)get_post_meta($post_id, self::META_OVERRIDE, true));
+        $source = $override !== '' ? $override : (string)get_post_field('post_content', $post_id);
+        $source = str_replace(["\r\n", "\r"], "\n", $source);
+        $normalized = self::normalize_wp_html_for_max($source);
+        $title = esc_html(self::clean_publish_text((string)get_the_title($post_id)));
+        $body = trim($normalized);
+
+        $composed = '<strong>' . $title . '</strong>';
+        if ($body !== '') {
+            $composed .= '<br><br>' . $body;
+        }
+
+        $with_fields = self::append_custom_fields_formatted($composed, $post_id, $settings);
+        $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
+        if (mb_strlen(wp_strip_all_tags($with_fields), 'UTF-8') > $max) {
+            return self::limit_text(wp_strip_all_tags($with_fields), $settings);
+        }
+        return $with_fields;
+    }
+
+    private static function normalize_wp_html_for_max(string $html): string {
+        $html = preg_replace('/<!--\s*\/?wp:.*?-->/is', '', $html);
+        $html = preg_replace('/<\/?(div|section|article)[^>]*class="[^"]*wp-block[^"]*"[^>]*>/i', '', $html);
+        $html = str_replace(['<p>&nbsp;</p>', '<p> </p>'], '', $html);
+        $html = self::convert_html_lists_to_text($html);
+
+        $allowed = [
+            'b' => [],
+            'strong' => [],
+            'i' => [],
+            'em' => [],
+            'a' => ['href' => true, 'title' => true, 'target' => true, 'rel' => true],
+            'code' => [],
+            'pre' => [],
+            'br' => [],
+            'p' => [],
+            'ul' => [],
+            'ol' => [],
+            'li' => [],
+            'blockquote' => [],
+        ];
+
+        $html = wp_kses($html, $allowed);
+        $html = preg_replace('/<(\/?)p>/i', '<$1p>', $html);
+        $html = preg_replace('/(?:<br\s*\/?>\s*){3,}/i', '<br><br>', $html);
+        return trim((string)$html);
+    }
+
+    private static function convert_html_lists_to_text(string $html): string {
+        $html = preg_replace_callback('/<ul[^>]*>(.*?)<\/ul>/is', static function($m) {
+            $items = [];
+            if (preg_match_all('/<li[^>]*>(.*?)<\/li>/is', (string)$m[1], $li_matches)) {
+                foreach ($li_matches[1] as $raw) {
+                    $items[] = '• ' . trim(wp_strip_all_tags((string)$raw));
+                }
+            }
+            return !empty($items) ? '<p>' . implode("<br>", $items) . '</p>' : '';
+        }, $html);
+
+        $html = preg_replace_callback('/<ol[^>]*>(.*?)<\/ol>/is', static function($m) {
+            $items = [];
+            if (preg_match_all('/<li[^>]*>(.*?)<\/li>/is', (string)$m[1], $li_matches)) {
+                $i = 1;
+                foreach ($li_matches[1] as $raw) {
+                    $items[] = $i++ . '. ' . trim(wp_strip_all_tags((string)$raw));
+                }
+            }
+            return !empty($items) ? '<p>' . implode("<br>", $items) . '</p>' : '';
+        }, $html);
+
+        return $html;
+    }
+
+    private static function append_custom_fields_formatted(string $html, int $post_id, array $settings): string {
+        if (empty($settings['publish_custom_fields'])) {
+            return $html;
+        }
+
+        $fields = self::parse_custom_fields_map((string)($settings['custom_fields_map'] ?? ''));
+        if (empty($fields)) return $html;
+
+        $lines = [];
+        foreach ($fields as $field) {
+            $value = get_post_meta($post_id, $field['key'], true);
+            if (is_array($value)) $value = wp_json_encode($value, JSON_UNESCAPED_UNICODE);
+            $value = self::clean_publish_text((string)$value);
+            if ($value === '') continue;
+            $safe_value = esc_html($value);
+            $safe_label = esc_html((string)$field['label']);
+            $lines[] = $safe_label !== '' ? ('<strong>'.$safe_label.':</strong> '.$safe_value) : $safe_value;
+        }
+
+        if (empty($lines)) return $html;
+        return $html . '<br><br>' . implode('<br>', $lines);
     }
 
     private static function build_text(int $post_id, array $settings): string {
