@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.10.4
+ * Version: 1.10.5
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.10.4';
+    private const VERSION = '1.10.5';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
@@ -1637,18 +1637,33 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     private static function build_test_content(array $settings): array {
-        $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
-        $url = home_url('/');
+    $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
+    $url = home_url('/');
 
-        if ($mode === 'formatted') {
-            $formatted = "<strong>MAX Autopost: тест форматирования</strong><br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>";
-            $plain = "MAX Autopost: тест форматирования\n\nКурсивный текст\nСсылка: ".$url."\n\n• Элемент списка 1\n• Элемент списка 2\n\ncode_example()";
-            return ['mode'=>'formatted', 'text'=>$formatted, 'parse_mode'=>'HTML', 'plain_fallback'=>$plain];
-        }
+    $plain_tail = "\n\nЭто тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
+    $html_tail  = "<br><br>Это тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
 
-        $plain = "MAX Autopost: тест\n\n".$url;
-        return ['mode'=>$mode, 'text'=>$plain, 'parse_mode'=>'', 'plain_fallback'=>$plain];
+    if ($mode === 'formatted') {
+        $formatted = "<strong>MAX Autopost: тест форматирования</strong><br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>".$html_tail;
+        $plain = "MAX Autopost: тест форматирования\n\nКурсивный текст\nСсылка: ".$url."\n\n• Элемент списка 1\n• Элемент списка 2\n\ncode_example()".$plain_tail;
+
+        return [
+            'mode' => 'formatted',
+            'text' => $formatted,
+            'parse_mode' => 'HTML',
+            'plain_fallback' => $plain,
+        ];
     }
+
+    $plain = "MAX Autopost: тест\n\n".$url.$plain_tail;
+
+    return [
+        'mode' => $mode,
+        'text' => $plain,
+        'parse_mode' => '',
+        'plain_fallback' => $plain,
+    ];
+}
 
     private static function build_excerpt_plain_text(int $post_id, array $settings): string {
         $title = self::clean_publish_text((string)get_the_title($post_id));

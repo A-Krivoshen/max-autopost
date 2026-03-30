@@ -1,4 +1,7 @@
 # Changelog
+## 1.10.5
+- fixed test message length for MAX
+- test content is now long enough for text-only and formatted test sends
 ## 1.10.4
 - fixed test send without image
 - test message now falls back to text-only when no valid image payload is available
