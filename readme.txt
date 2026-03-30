@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.10.0
+Stable tag: 1.10.1
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,11 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.10.1 =
+* Релизная проверка `message_format`: подтверждена совместимость formatted-режима с multi-target, изображением и кнопкой «Читать».
+* Подтверждена корректная fallback-логика `formatted -> plain_text` при API-ошибках.
+* Подготовлены требования к release-ready ZIP (корневая папка плагина: `max-autopost`).
+
 = 1.10.0 =
 * Добавлена настройка формата сообщения: `plain_text`, `formatted`, `excerpt_plain`.
 * Для `formatted` добавлена безопасная нормализация HTML (очистка Gutenberg-разметки, whitelist тегов, читаемые списки).

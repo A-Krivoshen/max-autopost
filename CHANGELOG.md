@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.1
+- Release hardening for `message_format` flow.
+- Verified formatted mode compatibility with multi-target, image attachments, and "Читать" button payload.
+- Confirmed formatted->plain fallback behavior and logging on API send errors.
+- Prepared release-ready ZIP structure requirements (plugin root folder remains `max-autopost`).
+
 ## 1.10.0
 - Added message format setting with modes: `plain_text`, `formatted`, `excerpt_plain`.
 - Implemented safe formatted-content pipeline for WordPress HTML (Gutenberg cleanup + allowed tags whitelist).

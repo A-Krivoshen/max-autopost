@@ -1,4 +1,9 @@
-# MAX Autopost (Free) v1.10.0
+# MAX Autopost (Free) v1.10.1
+
+## Что нового в 1.10.1
+- Релизная проверка `message_format`: подтверждена совместимость `formatted` с multi-target отправкой, изображением и кнопкой «Читать».
+- Подтверждена fallback-логика `formatted -> plain_text` на ошибках API и сохранение отправки по остальным target.
+- Подготовлена release-ready упаковка (ZIP с корневой папкой `max-autopost`).
 
 ## Что нового в 1.10.0
 - Добавлена настройка формата сообщения: `plain_text`, `formatted`, `excerpt_plain`.
