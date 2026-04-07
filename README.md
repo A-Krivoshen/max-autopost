@@ -1,5 +1,23 @@
 # MAX Autopost (Free) v1.10.6
 
+Плагин для автоматической отправки постов из WordPress в Telegram.
+
+### Установка
+1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/latest/download/max-autopost.zip)
+2. Установи через WordPress → Плагины → Добавить новый → Загрузить плагин
+
+### Автообновление
+Плагин обновляется автоматически через GitHub Releases (без WP.org).
+
+### Как работает
+- Поддерживает несколько каналов
+- Режимы: сразу, по расписанию, вручную
+- Полная кастомизация шаблонов
+
+[Подробная документация](https://github.com/A-Krivoshen/max-autopost/wiki)
+
+---
+⭐ MIT License • [GitHub](https://github.com/A-Krivoshen/max-autopost)
 # MAX Autopost (Free) v1.10.2
 = 1.10.3 =
 * Test release for GitHub updater verification.
