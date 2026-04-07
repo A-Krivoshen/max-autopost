@@ -1,3 +1,5 @@
+# MAX Autopost (Free) v1.10.6
+
 # MAX Autopost (Free) v1.10.2
 = 1.10.3 =
 * Test release for GitHub updater verification.
