@@ -3,7 +3,7 @@
 Плагин для автоматической отправки постов из WordPress в Telegram.
 
 ### Установка
-1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/latest/download/max-autopost.zip)
+1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.10.6/max-autopost-1.10.6.zip)
 2. Установи через WordPress → Плагины → Добавить новый → Загрузить плагин
 
 ### Автообновление
