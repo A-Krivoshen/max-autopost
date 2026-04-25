@@ -1,6 +1,6 @@
 # MAX Autopost (Free) v1.10.6
 
-Плагин для автоматической отправки постов из WordPress в Telegram.
+Плагин для автоматической отправки постов из WordPress в Max.
 
 ### Установка
 1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.10.6/max-autopost-1.10.6.zip)
