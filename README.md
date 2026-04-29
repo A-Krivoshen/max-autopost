@@ -22,6 +22,9 @@
 = 1.10.3 =
 * Test release for GitHub updater verification.
 ## Что нового в 1.10.1
+- Добавлено поле `post_append_text`: безопасный дополнительный текст в конце сообщения.
+- Для formatted-режима append-HTML проходит whitelist (`a`, `br`), для plain/excerpt используется plain-версия.
+- Для formatted-отправки в payload добавлен явный параметр `format=html` (fallback на plain сохранён).
 - Релизная проверка `message_format`: подтверждена совместимость `formatted` с multi-target отправкой, изображением и кнопкой «Читать».
 - Подтверждена fallback-логика `formatted -> plain_text` на ошибках API и сохранение отправки по остальным target.
 - Подготовлена release-ready упаковка (ZIP с корневой папкой `max-autopost`).
