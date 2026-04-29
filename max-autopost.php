@@ -956,6 +956,9 @@ public static function handle_send_test(): void {
     if (!empty($s['debug'])) {
         self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; button_count='.(int)count($buttons).'; has_image='.(int)$test_has_image);
     }
+    if (!empty($s['debug'])) {
+        self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; has_button='.(int)!empty($s['add_button']));
+    }
 
     self::log('test_send_mode', 0, 0, $test_send_mode);
 
