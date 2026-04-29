@@ -187,6 +187,9 @@ final class KRV_MAX_Autopost {
             'image_source_mode' => 'post_or_site',
             'add_button'    => 1,
             'button_text'   => 'Читать',
+            'add_subscribe_button' => 0,
+            'subscribe_button_text' => 'Подписаться',
+            'subscribe_button_url'  => '',
             'max_text_limit' => self::MAX_TEXT,
             'message_format' => 'plain_text',
             'post_append_text' => '',
@@ -230,6 +233,10 @@ final class KRV_MAX_Autopost {
 
         $out['button_text'] = isset($in['button_text']) ? sanitize_text_field((string)$in['button_text']) : $d['button_text'];
         if ($out['button_text'] === '') $out['button_text'] = $d['button_text'];
+        $out['add_subscribe_button'] = !empty($in['add_subscribe_button']) ? 1 : 0;
+        $out['subscribe_button_text'] = isset($in['subscribe_button_text']) ? sanitize_text_field((string)$in['subscribe_button_text']) : $d['subscribe_button_text'];
+        if ($out['subscribe_button_text'] === '') $out['subscribe_button_text'] = $d['subscribe_button_text'];
+        $out['subscribe_button_url'] = isset($in['subscribe_button_url']) ? esc_url_raw((string)$in['subscribe_button_url']) : $d['subscribe_button_url'];
 
         $text_limit = isset($in['max_text_limit']) ? (int)$in['max_text_limit'] : (int)$d['max_text_limit'];
         $out['max_text_limit'] = self::normalize_text_limit($text_limit);
@@ -390,6 +397,12 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
         echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_button]" value="1" '.checked((int)$s['add_button'],1,false).'> Включить кнопку “Читать”</label><br>';
         echo '<input type="text" name="'.esc_attr(self::OPT).'[button_text]" value="'.esc_attr($s['button_text']).'" style="width:220px;">';
         echo '<p class="description">inline_keyboard идёт <strong>вторым attachment</strong> (после image, если он есть).</p>';
+        echo '</td></tr>';
+        echo '<tr><th>Кнопка подписки</th><td>';
+        echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_subscribe_button]" value="1" '.checked((int)$s['add_subscribe_button'],1,false).'> Включить кнопку “Подписаться”</label><br>';
+        echo '<input type="text" name="'.esc_attr(self::OPT).'[subscribe_button_text]" value="'.esc_attr($s['subscribe_button_text']).'" style="width:220px;" placeholder="Подписаться"> ';
+        echo '<input type="url" class="regular-text" name="'.esc_attr(self::OPT).'[subscribe_button_url]" value="'.esc_attr($s['subscribe_button_url']).'" placeholder="https://max.ru/...">';
+        echo '<p class="description">Отдельная дополнительная кнопка. Не связана с <code>post_append_text</code>.</p>';
         echo '</td></tr>';
 
         echo '<tr><th>Длина текста</th><td>';
@@ -926,22 +939,22 @@ public static function handle_send_test(): void {
         }
     }
 
-    if ($test_has_image && !empty($s['add_button'])) {
+    $buttons = self::build_inline_keyboard_buttons($s, home_url('/'));
+    if (!empty($buttons)) {
         $attachments[] = [
             'type' => 'inline_keyboard',
             'payload' => [
-                'buttons' => [[[
-                    'type' => 'link',
-                    'text' => (string)$s['button_text'],
-                    'url'  => home_url('/'),
-                ]]],
+                'buttons' => [$buttons],
             ],
         ];
     }
 
-    if ($test_has_image && !empty($attachments)) {
+    if (!empty($attachments)) {
         $payload['attachments'] = $attachments;
-        $test_send_mode = 'test_with_image';
+        $test_send_mode = $test_has_image ? 'test_with_image' : 'test_with_keyboard';
+    }
+    if (!empty($s['debug'])) {
+        self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; button_count='.(int)count($buttons).'; has_image='.(int)$test_has_image);
     }
     if (!empty($s['debug'])) {
         self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; has_button='.(int)!empty($s['add_button']));
@@ -1175,22 +1188,19 @@ public static function handle_send_test(): void {
         }
 
         // BUTTON second
-        if (!empty($s['add_button'])) {
+        $buttons = self::build_inline_keyboard_buttons($s, (string)$url);
+        if (!empty($buttons)) {
             $attachments[] = [
                 'type'=>'inline_keyboard',
                 'payload'=>[
-                    'buttons'=>[[[
-                        'type'=>'link',
-                        'text'=>(string)$s['button_text'],
-                        'url'=>$url,
-                    ]]],
+                    'buttons'=>[$buttons],
                 ],
             ];
         }
 
         if (!empty($attachments)) $payload['attachments'] = $attachments;
         if (!empty($s['debug'])) {
-            self::log('send_attachments', 0, $post_id, 'attachments_count='.(int)count($attachments).'; has_image='.(int)(isset($attachments[0]) && ($attachments[0]['type'] ?? '') === 'image').'; has_button='.(int)!empty($s['add_button']));
+            self::log('send_attachments', 0, $post_id, 'attachments_count='.(int)count($attachments).'; has_image='.(int)(isset($attachments[0]) && ($attachments[0]['type'] ?? '') === 'image').'; button_count='.(int)count($buttons));
         }
 
         // Dedupe (stable hash w/o upload payload)
@@ -1480,6 +1490,31 @@ public static function handle_send_test(): void {
 }
 
     /* ================= HELPERS ================= */
+    private static function build_inline_keyboard_buttons(array $settings, string $default_url = ''): array {
+        $buttons = [];
+
+        if (!empty($settings['add_button']) && $default_url !== '') {
+            $buttons[] = [
+                'type' => 'link',
+                'text' => (string)$settings['button_text'],
+                'url'  => $default_url,
+            ];
+        }
+
+        if (!empty($settings['add_subscribe_button'])) {
+            $sub_url = trim((string)($settings['subscribe_button_url'] ?? ''));
+            if ($sub_url !== '') {
+                $buttons[] = [
+                    'type' => 'link',
+                    'text' => (string)($settings['subscribe_button_text'] ?? 'Подписаться'),
+                    'url'  => $sub_url,
+                ];
+            }
+        }
+
+        return $buttons;
+    }
+
     private static function supported_post_types(): array {
         $s = self::get_settings();
         $types = isset($s['enabled_post_types']) && is_array($s['enabled_post_types']) ? $s['enabled_post_types'] : [];

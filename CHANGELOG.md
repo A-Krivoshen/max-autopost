@@ -1,5 +1,8 @@
 # Changelog
 ## 1.10.7
+- added separate subscribe button settings: `add_subscribe_button`, `subscribe_button_text`, `subscribe_button_url`
+- inline keyboard now supports one or two link buttons ("Читать" and/or "Подписаться")
+- test send now can include inline keyboard even without image attachment
 - added `post_append_text` setting (safe append text after the main message)
 - append text is sanitized via whitelist (`a`, `br`) for formatted mode and converted to plain text for plain/excerpt modes
 - formatted mode payload now includes `format=html` (with existing plain fallback behavior preserved)
