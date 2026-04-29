@@ -187,8 +187,12 @@ final class KRV_MAX_Autopost {
             'image_source_mode' => 'post_or_site',
             'add_button'    => 1,
             'button_text'   => 'Читать',
+            'add_subscribe_button' => 0,
+            'subscribe_button_text' => 'Подписаться',
+            'subscribe_button_url'  => '',
             'max_text_limit' => self::MAX_TEXT,
             'message_format' => 'plain_text',
+            'post_append_text' => '',
             'publish_custom_fields' => 0,
             'enabled_post_types'    => ['post'],
             'custom_fields_map'     => '',
@@ -229,11 +233,17 @@ final class KRV_MAX_Autopost {
 
         $out['button_text'] = isset($in['button_text']) ? sanitize_text_field((string)$in['button_text']) : $d['button_text'];
         if ($out['button_text'] === '') $out['button_text'] = $d['button_text'];
+        $out['add_subscribe_button'] = !empty($in['add_subscribe_button']) ? 1 : 0;
+        $out['subscribe_button_text'] = isset($in['subscribe_button_text']) ? sanitize_text_field((string)$in['subscribe_button_text']) : $d['subscribe_button_text'];
+        if ($out['subscribe_button_text'] === '') $out['subscribe_button_text'] = $d['subscribe_button_text'];
+        $out['subscribe_button_url'] = isset($in['subscribe_button_url']) ? esc_url_raw((string)$in['subscribe_button_url']) : $d['subscribe_button_url'];
 
         $text_limit = isset($in['max_text_limit']) ? (int)$in['max_text_limit'] : (int)$d['max_text_limit'];
         $out['max_text_limit'] = self::normalize_text_limit($text_limit);
         $format = isset($in['message_format']) ? sanitize_key((string)$in['message_format']) : (string)$d['message_format'];
         $out['message_format'] = self::normalize_message_format($format);
+        $append_raw = isset($in['post_append_text']) ? (string)$in['post_append_text'] : $d['post_append_text'];
+        $out['post_append_text'] = trim((string)wp_kses($append_raw, self::append_allowed_html_tags()));
 
         $out['publish_custom_fields'] = !empty($in['publish_custom_fields']) ? 1 : 0;
 
@@ -388,6 +398,12 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
         echo '<input type="text" name="'.esc_attr(self::OPT).'[button_text]" value="'.esc_attr($s['button_text']).'" style="width:220px;">';
         echo '<p class="description">inline_keyboard идёт <strong>вторым attachment</strong> (после image, если он есть).</p>';
         echo '</td></tr>';
+        echo '<tr><th>Кнопка подписки</th><td>';
+        echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_subscribe_button]" value="1" '.checked((int)$s['add_subscribe_button'],1,false).'> Включить кнопку “Подписаться”</label><br>';
+        echo '<input type="text" name="'.esc_attr(self::OPT).'[subscribe_button_text]" value="'.esc_attr($s['subscribe_button_text']).'" style="width:220px;" placeholder="Подписаться"> ';
+        echo '<input type="url" class="regular-text" name="'.esc_attr(self::OPT).'[subscribe_button_url]" value="'.esc_attr($s['subscribe_button_url']).'" placeholder="https://max.ru/...">';
+        echo '<p class="description">Отдельная дополнительная кнопка. Не связана с <code>post_append_text</code>.</p>';
+        echo '</td></tr>';
 
         echo '<tr><th>Длина текста</th><td>';
         echo '<input type="number" min="'.esc_attr((string)self::MIN_TEXT).'" max="'.esc_attr((string)self::MAX_TEXT).'" step="1" name="'.esc_attr(self::OPT).'[max_text_limit]" value="'.esc_attr((string)(int)$s['max_text_limit']).'" style="width:130px;">';
@@ -401,6 +417,11 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
         echo '<option value="excerpt_plain" '.selected((string)$s['message_format'], 'excerpt_plain', false).'>excerpt plain</option>';
         echo '</select>';
         echo '<p class="description">plain text — максимально совместимый режим; formatted — сохраняет базовое форматирование; excerpt plain — безопасный короткий анонс без HTML.</p>';
+        echo '</td></tr>';
+
+        echo '<tr><th>Текст после записи</th><td>';
+        echo '<textarea name="'.esc_attr(self::OPT).'[post_append_text]" class="large-text code" rows="4" placeholder="<a href=&quot;https://max.ru/...&quot;>Подписаться на канал</a>">'.esc_textarea((string)$s['post_append_text']).'</textarea>';
+        echo '<p class="description">Дополнительный текст в конце сообщения. В режиме formatted поддерживаются безопасные HTML-теги: <code>a</code>, <code>br</code>. В plain/excerpt используется текстовая версия.</p>';
         echo '</td></tr>';
 
         $post_types = self::available_post_types();
@@ -878,6 +899,12 @@ public static function handle_send_test(): void {
     if (!empty($test_content['parse_mode'])) {
         $payload['parse_mode'] = (string)$test_content['parse_mode'];
     }
+    if (!empty($test_content['format'])) {
+        $payload['format'] = (string)$test_content['format'];
+    }
+    if (!empty($s['debug'])) {
+        self::log('test_payload', 0, 0, 'mode='.(string)$test_content['mode'].'; format='.(string)($payload['format'] ?? '').'; parse_mode='.(string)($payload['parse_mode'] ?? '').'; text='.self::short((string)$payload['text']));
+    }
 
     $attachments = [];
     $test_has_image = false;
@@ -912,22 +939,22 @@ public static function handle_send_test(): void {
         }
     }
 
-    if ($test_has_image && !empty($s['add_button'])) {
+    $buttons = self::build_inline_keyboard_buttons($s, home_url('/'));
+    if (!empty($buttons)) {
         $attachments[] = [
             'type' => 'inline_keyboard',
             'payload' => [
-                'buttons' => [[[
-                    'type' => 'link',
-                    'text' => (string)$s['button_text'],
-                    'url'  => home_url('/'),
-                ]]],
+                'buttons' => [$buttons],
             ],
         ];
     }
 
-    if ($test_has_image && !empty($attachments)) {
+    if (!empty($attachments)) {
         $payload['attachments'] = $attachments;
-        $test_send_mode = 'test_with_image';
+        $test_send_mode = $test_has_image ? 'test_with_image' : 'test_with_keyboard';
+    }
+    if (!empty($s['debug'])) {
+        self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; button_count='.(int)count($buttons).'; has_image='.(int)$test_has_image);
     }
 
     self::log('test_send_mode', 0, 0, $test_send_mode);
@@ -1132,10 +1159,18 @@ public static function handle_send_test(): void {
         $message = self::build_message_content($post_id, $s);
         $text = (string)$message['text'];
         $url  = get_permalink($post_id);
+        $append = self::get_append_text_variants($s);
+        if (!empty($s['debug'])) {
+            self::log('send_mode', 0, $post_id, 'mode='.(string)$message['mode'].'; format='.(string)($message['format'] ?? '').'; append='.(int)($append['raw'] !== ''));
+            self::log('send_payload', 0, $post_id, 'parse_mode='.(string)($message['parse_mode'] ?? '').'; format='.(string)($message['format'] ?? '').'; text='.self::short($text));
+        }
 
         $payload = ['text'=>$text,'notify'=>(bool)$s['notify']];
         if (!empty($message['parse_mode'])) {
             $payload['parse_mode'] = (string)$message['parse_mode'];
+        }
+        if (!empty($message['format'])) {
+            $payload['format'] = (string)$message['format'];
         }
         $attachments = [];
 
@@ -1150,20 +1185,20 @@ public static function handle_send_test(): void {
         }
 
         // BUTTON second
-        if (!empty($s['add_button'])) {
+        $buttons = self::build_inline_keyboard_buttons($s, (string)$url);
+        if (!empty($buttons)) {
             $attachments[] = [
                 'type'=>'inline_keyboard',
                 'payload'=>[
-                    'buttons'=>[[[
-                        'type'=>'link',
-                        'text'=>(string)$s['button_text'],
-                        'url'=>$url,
-                    ]]],
+                    'buttons'=>[$buttons],
                 ],
             ];
         }
 
         if (!empty($attachments)) $payload['attachments'] = $attachments;
+        if (!empty($s['debug'])) {
+            self::log('send_attachments', 0, $post_id, 'attachments_count='.(int)count($attachments).'; has_image='.(int)(isset($attachments[0]) && ($attachments[0]['type'] ?? '') === 'image').'; button_count='.(int)count($buttons));
+        }
 
         // Dedupe (stable hash w/o upload payload)
         $sig = [
@@ -1426,6 +1461,7 @@ public static function handle_send_test(): void {
     $primary = self::api($payload, $chat_id, $token, $post_id, $debug);
     $primary['fallback_used'] = false;
     $primary['parse_mode'] = (string)($payload['parse_mode'] ?? '');
+    $primary['format'] = (string)($payload['format'] ?? '');
 
     if (!empty($primary['ok']) || $format_mode !== 'formatted') {
         return $primary;
@@ -1446,10 +1482,36 @@ public static function handle_send_test(): void {
     $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
     $retry['fallback_used'] = true;
     $retry['parse_mode'] = '';
+    $retry['format'] = '';
     return $retry;
 }
 
     /* ================= HELPERS ================= */
+    private static function build_inline_keyboard_buttons(array $settings, string $default_url = ''): array {
+        $buttons = [];
+
+        if (!empty($settings['add_button']) && $default_url !== '') {
+            $buttons[] = [
+                'type' => 'link',
+                'text' => (string)$settings['button_text'],
+                'url'  => $default_url,
+            ];
+        }
+
+        if (!empty($settings['add_subscribe_button'])) {
+            $sub_url = trim((string)($settings['subscribe_button_url'] ?? ''));
+            if ($sub_url !== '') {
+                $buttons[] = [
+                    'type' => 'link',
+                    'text' => (string)($settings['subscribe_button_text'] ?? 'Подписаться'),
+                    'url'  => $sub_url,
+                ];
+            }
+        }
+
+        return $buttons;
+    }
+
     private static function supported_post_types(): array {
         $s = self::get_settings();
         $types = isset($s['enabled_post_types']) && is_array($s['enabled_post_types']) ? $s['enabled_post_types'] : [];
@@ -1635,6 +1697,7 @@ private static function has_media_payload_markers($payload): bool {
                 'mode' => 'formatted',
                 'text' => $formatted,
                 'parse_mode' => 'HTML',
+                'format' => 'html',
                 'plain_fallback' => $plain,
             ];
         }
@@ -1673,6 +1736,7 @@ private static function build_test_content(array $settings): array {
             'mode' => 'formatted',
             'text' => $formatted,
             'parse_mode' => 'HTML',
+            'format' => 'html',
             'plain_fallback' => $plain,
         ];
     }
@@ -1694,7 +1758,12 @@ private static function build_test_content(array $settings): array {
         }
         $excerpt = self::clean_publish_text((string)$excerpt);
         $excerpt = wp_trim_words($excerpt, 55, '…');
-        return self::limit_text(trim($title . "\n\n" . $excerpt), $settings);
+        $text = trim($title . "\n\n" . $excerpt);
+        $append = self::get_append_text_variants($settings);
+        if ($append['plain'] !== '') {
+            $text = trim($text . "\n\n" . $append['plain']);
+        }
+        return self::limit_text($text, $settings);
     }
 
     private static function build_formatted_text(int $post_id, array $settings): string {
@@ -1711,11 +1780,46 @@ private static function build_test_content(array $settings): array {
         }
 
         $with_fields = self::append_custom_fields_formatted($composed, $post_id, $settings);
+        $append = self::get_append_text_variants($settings);
+        if ($append['html'] !== '') {
+            $with_fields .= '<br><br>' . $append['html'];
+        }
         $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
-        if (mb_strlen(wp_strip_all_tags($with_fields), 'UTF-8') > $max) {
-            return self::limit_text(wp_strip_all_tags($with_fields), $settings);
+        if (mb_strlen(self::clean_publish_text(wp_strip_all_tags($with_fields)), 'UTF-8') > $max) {
+            $append_plain = $append['plain'] !== '' ? "\n\n".$append['plain'] : '';
+            $base_plain = self::clean_publish_text(wp_strip_all_tags(self::append_custom_fields_formatted($composed, $post_id, $settings)));
+            $base_budget = max(0, $max - mb_strlen(self::clean_publish_text($append_plain), 'UTF-8'));
+            if ($base_budget <= 0) {
+                return self::limit_text(self::clean_publish_text($append_plain), $settings);
+            }
+            $trimmed_base = self::limit_text($base_plain, array_merge($settings, ['max_text_limit' => $base_budget]));
+            return self::limit_text(trim($trimmed_base . $append_plain), $settings);
         }
         return $with_fields;
+    }
+
+    private static function append_allowed_html_tags(): array {
+        return [
+            'a' => ['href' => true, 'title' => true, 'target' => true, 'rel' => true],
+            'br' => [],
+        ];
+    }
+
+    private static function get_append_text_variants(array $settings): array {
+        $raw = isset($settings['post_append_text']) ? (string)$settings['post_append_text'] : '';
+        $raw = trim($raw);
+        if ($raw === '') {
+            return ['raw' => '', 'html' => '', 'plain' => ''];
+        }
+
+        $html = trim((string)wp_kses($raw, self::append_allowed_html_tags()));
+        $plain = self::clean_publish_text(wp_strip_all_tags(str_replace(['<br>', '<br/>', '<br />'], "\n", $html)));
+
+        return [
+            'raw' => $raw,
+            'html' => $html,
+            'plain' => $plain,
+        ];
     }
 
     private static function normalize_wp_html_for_max(string $html): string {
@@ -1811,7 +1915,12 @@ private static function build_test_content(array $settings): array {
         $excerpt = wp_trim_words($excerpt, $word_limit, '…');
 
         $base = trim($title . "\n\n" . $excerpt);
-        return self::append_custom_fields($base, $post_id, $settings);
+        $text = self::append_custom_fields($base, $post_id, $settings);
+        $append = self::get_append_text_variants($settings);
+        if ($append['plain'] !== '') {
+            $text = trim($text . "\n\n" . $append['plain']);
+        }
+        return self::limit_text($text, $settings);
     }
 
     private static function append_custom_fields(string $text, int $post_id, array $settings): string {

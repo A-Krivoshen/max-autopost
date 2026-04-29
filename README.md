@@ -22,6 +22,12 @@
 = 1.10.3 =
 * Test release for GitHub updater verification.
 ## Что нового в 1.10.1
+- Добавлено поле `post_append_text`: безопасный дополнительный текст в конце сообщения.
+- Добавлена отдельная кнопка подписки (`add_subscribe_button`, `subscribe_button_text`, `subscribe_button_url`) — это отдельная inline-кнопка, не связанная с `post_append_text`.
+- Для formatted-режима append-HTML проходит whitelist (`a`, `br`), для plain/excerpt используется plain-версия.
+- Для formatted-отправки в payload добавлен явный параметр `format=html` (fallback на plain сохранён).
+- Исправлено: HTML в `post_append_text` больше не очищается до plain на этапе сохранения настроек; ссылка `<a href=\"...\">` сохраняется для `formatted`.
+- Тестовая отправка теперь добавляет inline-кнопки даже без изображения (кнопки больше не зависят от image attachment).
 - Релизная проверка `message_format`: подтверждена совместимость `formatted` с multi-target отправкой, изображением и кнопкой «Читать».
 - Подтверждена fallback-логика `formatted -> plain_text` на ошибках API и сохранение отправки по остальным target.
 - Подготовлена release-ready упаковка (ZIP с корневой папкой `max-autopost`).
