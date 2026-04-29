@@ -1,4 +1,9 @@
 # Changelog
+## 1.10.7
+- added `post_append_text` setting (safe append text after the main message)
+- append text is sanitized via whitelist (`a`, `br`) for formatted mode and converted to plain text for plain/excerpt modes
+- formatted mode payload now includes `format=html` (with existing plain fallback behavior preserved)
+- improved formatted debug logging (`mode`, `format`, append presence, fallback info)
 ## 1.10.6
 - fixed test image payload validation
 - fixed formatted fallback to plain text without attachments
