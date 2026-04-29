@@ -35,6 +35,7 @@ License URI: https://opensource.org/license/mit/
 * Добавлено поле `post_append_text` для безопасного текста после основной публикации.
 * В formatted-режиме append-HTML фильтруется whitelist-ом (`a`, `br`), в plain/excerpt добавляется plain-версия.
 * В formatted payload добавлен явный параметр `format=html`, fallback на plain text сохранён.
+* Исправлено: HTML-ссылка в `post_append_text` больше не теряется на сохранении настроек и корректно уходит в formatted-тексте.
 
 = 1.10.1 =
 * Релизная проверка `message_format`: подтверждена совместимость formatted-режима с multi-target, изображением и кнопкой «Читать».

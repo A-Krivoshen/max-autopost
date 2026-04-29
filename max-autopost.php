@@ -235,7 +235,8 @@ final class KRV_MAX_Autopost {
         $out['max_text_limit'] = self::normalize_text_limit($text_limit);
         $format = isset($in['message_format']) ? sanitize_key((string)$in['message_format']) : (string)$d['message_format'];
         $out['message_format'] = self::normalize_message_format($format);
-        $out['post_append_text'] = isset($in['post_append_text']) ? sanitize_textarea_field((string)$in['post_append_text']) : $d['post_append_text'];
+        $append_raw = isset($in['post_append_text']) ? (string)$in['post_append_text'] : $d['post_append_text'];
+        $out['post_append_text'] = trim((string)wp_kses($append_raw, self::append_allowed_html_tags()));
 
         $out['publish_custom_fields'] = !empty($in['publish_custom_fields']) ? 1 : 0;
 
@@ -888,6 +889,9 @@ public static function handle_send_test(): void {
     if (!empty($test_content['format'])) {
         $payload['format'] = (string)$test_content['format'];
     }
+    if (!empty($s['debug'])) {
+        self::log('test_payload', 0, 0, 'mode='.(string)$test_content['mode'].'; format='.(string)($payload['format'] ?? '').'; parse_mode='.(string)($payload['parse_mode'] ?? '').'; text='.self::short((string)$payload['text']));
+    }
 
     $attachments = [];
     $test_has_image = false;
@@ -938,6 +942,9 @@ public static function handle_send_test(): void {
     if ($test_has_image && !empty($attachments)) {
         $payload['attachments'] = $attachments;
         $test_send_mode = 'test_with_image';
+    }
+    if (!empty($s['debug'])) {
+        self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; has_button='.(int)!empty($s['add_button']));
     }
 
     self::log('test_send_mode', 0, 0, $test_send_mode);
@@ -1145,6 +1152,7 @@ public static function handle_send_test(): void {
         $append = self::get_append_text_variants($s);
         if (!empty($s['debug'])) {
             self::log('send_mode', 0, $post_id, 'mode='.(string)$message['mode'].'; format='.(string)($message['format'] ?? '').'; append='.(int)($append['raw'] !== ''));
+            self::log('send_payload', 0, $post_id, 'parse_mode='.(string)($message['parse_mode'] ?? '').'; format='.(string)($message['format'] ?? '').'; text='.self::short($text));
         }
 
         $payload = ['text'=>$text,'notify'=>(bool)$s['notify']];
@@ -1181,6 +1189,9 @@ public static function handle_send_test(): void {
         }
 
         if (!empty($attachments)) $payload['attachments'] = $attachments;
+        if (!empty($s['debug'])) {
+            self::log('send_attachments', 0, $post_id, 'attachments_count='.(int)count($attachments).'; has_image='.(int)(isset($attachments[0]) && ($attachments[0]['type'] ?? '') === 'image').'; has_button='.(int)!empty($s['add_button']));
+        }
 
         // Dedupe (stable hash w/o upload payload)
         $sig = [
@@ -1755,6 +1766,13 @@ private static function build_test_content(array $settings): array {
         return $with_fields;
     }
 
+    private static function append_allowed_html_tags(): array {
+        return [
+            'a' => ['href' => true, 'title' => true, 'target' => true, 'rel' => true],
+            'br' => [],
+        ];
+    }
+
     private static function get_append_text_variants(array $settings): array {
         $raw = isset($settings['post_append_text']) ? (string)$settings['post_append_text'] : '';
         $raw = trim($raw);
@@ -1762,12 +1780,7 @@ private static function build_test_content(array $settings): array {
             return ['raw' => '', 'html' => '', 'plain' => ''];
         }
 
-        $allowed = [
-            'a' => ['href' => true, 'title' => true, 'target' => true, 'rel' => true],
-            'br' => [],
-        ];
-
-        $html = trim((string)wp_kses($raw, $allowed));
+        $html = trim((string)wp_kses($raw, self::append_allowed_html_tags()));
         $plain = self::clean_publish_text(wp_strip_all_tags(str_replace(['<br>', '<br/>', '<br />'], "\n", $html)));
 
         return [
