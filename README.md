@@ -1,9 +1,9 @@
-# MAX Autopost (Free) v1.10.6
+# MAX Autopost (Free) v1.10.8
 
 Плагин для автоматической отправки постов из WordPress в Max.
 
 ### Установка
-1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.10.6/max-autopost-1.10.6.zip)
+1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.10.8/max-autopost-1.10.8.zip)
 2. Установи через WordPress → Плагины → Добавить новый → Загрузить плагин
 
 ### Автообновление

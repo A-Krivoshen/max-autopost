@@ -1,4 +1,6 @@
 # Changelog
+## 1.10.8
+- fixed plain/excerpt append text conversion: links from `post_append_text` now keep visible URL text instead of being stripped with HTML tags
 ## 1.10.7
 - added separate subscribe button settings: `add_subscribe_button`, `subscribe_button_text`, `subscribe_button_url`
 - inline keyboard now supports one or two link buttons ("Читать" and/or "Подписаться")
