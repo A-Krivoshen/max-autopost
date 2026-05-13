@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.10.6
+ * Version: 1.10.9
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.10.6';
+    private const VERSION = '1.10.9';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
@@ -421,7 +421,7 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
 
         echo '<tr><th>Текст после записи</th><td>';
         echo '<textarea name="'.esc_attr(self::OPT).'[post_append_text]" class="large-text code" rows="4" placeholder="<a href=&quot;https://max.ru/...&quot;>Подписаться на канал</a>">'.esc_textarea((string)$s['post_append_text']).'</textarea>';
-        echo '<p class="description">Дополнительный текст в конце сообщения. В режиме formatted поддерживаются безопасные HTML-теги: <code>a</code>, <code>br</code>. В plain/excerpt используется текстовая версия.</p>';
+        echo '<p class="description">Дополнительный текст в конце сообщения. В режиме formatted поддерживаются безопасные HTML-теги: <code>a</code>, <code>br</code>. В plain/excerpt HTML снимается, а ссылки выводятся как текст + URL.</p>';
         echo '</td></tr>';
 
         $post_types = self::available_post_types();
@@ -956,10 +956,6 @@ public static function handle_send_test(): void {
     if (!empty($s['debug'])) {
         self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; button_count='.(int)count($buttons).'; has_image='.(int)$test_has_image);
     }
-    if (!empty($s['debug'])) {
-        self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; has_button='.(int)!empty($s['add_button']));
-    }
-
     self::log('test_send_mode', 0, 0, $test_send_mode);
 
     $dispatch = self::dispatch_to_targets(
@@ -1211,6 +1207,9 @@ public static function handle_send_test(): void {
             'has_button'=>(int)!empty($s['add_button']),
             'button_text'=>(string)$s['button_text'],
             'url'=>$url,
+            'has_subscribe_button'=>(int)!empty($s['add_subscribe_button']),
+            'subscribe_button_text'=>(string)($s['subscribe_button_text'] ?? ''),
+            'subscribe_button_url'=>(string)($s['subscribe_button_url'] ?? ''),
             'targets'=>$targets,
             'post_modified_gmt'=>get_post_modified_time('U', true, $post_id),
         ];
@@ -1763,10 +1762,7 @@ private static function build_test_content(array $settings): array {
         $excerpt = wp_trim_words($excerpt, 55, '…');
         $text = trim($title . "\n\n" . $excerpt);
         $append = self::get_append_text_variants($settings);
-        if ($append['plain'] !== '') {
-            $text = trim($text . "\n\n" . $append['plain']);
-        }
-        return self::limit_text($text, $settings);
+        return self::append_plain_tail_preserving_end($text, (string)$append['plain'], $settings);
     }
 
     private static function build_formatted_text(int $post_id, array $settings): string {
@@ -1789,14 +1785,8 @@ private static function build_test_content(array $settings): array {
         }
         $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
         if (mb_strlen(self::clean_publish_text(wp_strip_all_tags($with_fields)), 'UTF-8') > $max) {
-            $append_plain = $append['plain'] !== '' ? "\n\n".$append['plain'] : '';
             $base_plain = self::clean_publish_text(wp_strip_all_tags(self::append_custom_fields_formatted($composed, $post_id, $settings)));
-            $base_budget = max(0, $max - mb_strlen(self::clean_publish_text($append_plain), 'UTF-8'));
-            if ($base_budget <= 0) {
-                return self::limit_text(self::clean_publish_text($append_plain), $settings);
-            }
-            $trimmed_base = self::limit_text($base_plain, array_merge($settings, ['max_text_limit' => $base_budget]));
-            return self::limit_text(trim($trimmed_base . $append_plain), $settings);
+            return self::append_plain_tail_preserving_end($base_plain, (string)$append['plain'], $settings);
         }
         return $with_fields;
     }
@@ -1816,13 +1806,45 @@ private static function build_test_content(array $settings): array {
         }
 
         $html = trim((string)wp_kses($raw, self::append_allowed_html_tags()));
-        $plain = self::clean_publish_text(wp_strip_all_tags(str_replace(['<br>', '<br/>', '<br />'], "\n", $html)));
+        $plain = self::append_html_to_plain_text($html);
 
         return [
             'raw' => $raw,
             'html' => $html,
             'plain' => $plain,
         ];
+    }
+
+    private static function append_html_to_plain_text(string $html): string {
+        $html = trim($html);
+        if ($html === '') {
+            return '';
+        }
+
+        $html = preg_replace_callback('/<a\b([^>]*)>(.*?)<\/a>/is', static function($m) {
+            $attrs = (string)($m[1] ?? '');
+            $label = self::clean_publish_text(wp_strip_all_tags(str_replace(['<br>', '<br/>', '<br />'], "\n", (string)($m[2] ?? ''))));
+            $url = '';
+
+            if (preg_match('/\bhref\s*=\s*(["\'])(.*?)\1/i', $attrs, $href_match)) {
+                $url = (string)$href_match[2];
+            } elseif (preg_match('/\bhref\s*=\s*([^\s>]+)/i', $attrs, $href_match)) {
+                $url = (string)$href_match[1];
+            }
+
+            $url = esc_url_raw(html_entity_decode($url, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            if ($url === '') {
+                return $label;
+            }
+            if ($label === '' || $label === $url) {
+                return $url;
+            }
+
+            return $label . "\n" . $url;
+        }, $html);
+
+        $html = str_replace(['<br>', '<br/>', '<br />'], "\n", (string)$html);
+        return self::clean_publish_text(wp_strip_all_tags($html));
     }
 
     private static function normalize_wp_html_for_max(string $html): string {
@@ -1904,7 +1926,11 @@ private static function build_test_content(array $settings): array {
     private static function build_text(int $post_id, array $settings): string {
         $override = trim((string)get_post_meta($post_id,self::META_OVERRIDE,true));
         $override = str_replace(["\r\n","\r"], "\n", $override);
-        if ($override !== '') return self::append_custom_fields($override, $post_id, $settings);
+        $append = self::get_append_text_variants($settings);
+        if ($override !== '') {
+            $text = self::append_custom_fields($override, $post_id, $settings);
+            return self::append_plain_tail_preserving_end($text, (string)$append['plain'], $settings);
+        }
 
         $title = self::clean_publish_text((string)get_the_title($post_id));
 
@@ -1919,11 +1945,26 @@ private static function build_test_content(array $settings): array {
 
         $base = trim($title . "\n\n" . $excerpt);
         $text = self::append_custom_fields($base, $post_id, $settings);
-        $append = self::get_append_text_variants($settings);
-        if ($append['plain'] !== '') {
-            $text = trim($text . "\n\n" . $append['plain']);
+        return self::append_plain_tail_preserving_end($text, (string)$append['plain'], $settings);
+    }
+
+    private static function append_plain_tail_preserving_end(string $base_text, string $append_plain, array $settings): string {
+        $append_plain = self::clean_publish_text($append_plain);
+        if ($append_plain === '') {
+            return self::limit_text($base_text, $settings);
         }
-        return self::limit_text($text, $settings);
+
+        $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
+        $tail = "\n\n" . $append_plain;
+        $tail_len = mb_strlen($tail, 'UTF-8');
+        $base_budget = max(0, $max - $tail_len);
+
+        if ($base_budget <= 0) {
+            return self::limit_text($append_plain, $settings);
+        }
+
+        $base = self::limit_text($base_text, array_merge($settings, ['max_text_limit' => $base_budget]));
+        return self::limit_text(trim($base . $tail), $settings);
     }
 
     private static function append_custom_fields(string $text, int $post_id, array $settings): string {

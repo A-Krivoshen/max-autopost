@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.10.6
+Stable tag: 1.10.9
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,12 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.10.9 =
+* Исправлено: `post_append_text` теперь сохраняется в конце plain/excerpt-сообщений даже при ограничении длины текста.
+
+= 1.10.8 =
+* Исправлено: ссылки из поля `post_append_text` теперь видны в plain/excerpt как текст ссылки и URL, а не теряются при снятии HTML.
+
 = 1.10.7 =
 * Добавлено поле `post_append_text` для безопасного текста после основной публикации.
 * Добавлены отдельные настройки кнопки подписки: `add_subscribe_button`, `subscribe_button_text`, `subscribe_button_url`.
