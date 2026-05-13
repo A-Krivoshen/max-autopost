@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.10.7
+ * Version: 1.10.8
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.10.7';
+    private const VERSION = '1.10.8';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
@@ -421,7 +421,7 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
 
         echo '<tr><th>Текст после записи</th><td>';
         echo '<textarea name="'.esc_attr(self::OPT).'[post_append_text]" class="large-text code" rows="4" placeholder="<a href=&quot;https://max.ru/...&quot;>Подписаться на канал</a>">'.esc_textarea((string)$s['post_append_text']).'</textarea>';
-        echo '<p class="description">Дополнительный текст в конце сообщения. В режиме formatted поддерживаются безопасные HTML-теги: <code>a</code>, <code>br</code>. В plain/excerpt используется текстовая версия.</p>';
+        echo '<p class="description">Дополнительный текст в конце сообщения. В режиме formatted поддерживаются безопасные HTML-теги: <code>a</code>, <code>br</code>. В plain/excerpt HTML снимается, а ссылки выводятся как текст + URL.</p>';
         echo '</td></tr>';
 
         $post_types = self::available_post_types();
@@ -1815,13 +1815,45 @@ private static function build_test_content(array $settings): array {
         }
 
         $html = trim((string)wp_kses($raw, self::append_allowed_html_tags()));
-        $plain = self::clean_publish_text(wp_strip_all_tags(str_replace(['<br>', '<br/>', '<br />'], "\n", $html)));
+        $plain = self::append_html_to_plain_text($html);
 
         return [
             'raw' => $raw,
             'html' => $html,
             'plain' => $plain,
         ];
+    }
+
+    private static function append_html_to_plain_text(string $html): string {
+        $html = trim($html);
+        if ($html === '') {
+            return '';
+        }
+
+        $html = preg_replace_callback('/<a\b([^>]*)>(.*?)<\/a>/is', static function($m) {
+            $attrs = (string)($m[1] ?? '');
+            $label = self::clean_publish_text(wp_strip_all_tags(str_replace(['<br>', '<br/>', '<br />'], "\n", (string)($m[2] ?? ''))));
+            $url = '';
+
+            if (preg_match('/\bhref\s*=\s*(["\'])(.*?)\1/i', $attrs, $href_match)) {
+                $url = (string)$href_match[2];
+            } elseif (preg_match('/\bhref\s*=\s*([^\s>]+)/i', $attrs, $href_match)) {
+                $url = (string)$href_match[1];
+            }
+
+            $url = esc_url_raw(html_entity_decode($url, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            if ($url === '') {
+                return $label;
+            }
+            if ($label === '' || $label === $url) {
+                return $url;
+            }
+
+            return $label . "\n" . $url;
+        }, $html);
+
+        $html = str_replace(['<br>', '<br/>', '<br />'], "\n", (string)$html);
+        return self::clean_publish_text(wp_strip_all_tags($html));
     }
 
     private static function normalize_wp_html_for_max(string $html): string {
