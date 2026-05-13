@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.10.8
+ * Version: 1.10.9
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.10.8';
+    private const VERSION = '1.10.9';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
@@ -1762,10 +1762,7 @@ private static function build_test_content(array $settings): array {
         $excerpt = wp_trim_words($excerpt, 55, '…');
         $text = trim($title . "\n\n" . $excerpt);
         $append = self::get_append_text_variants($settings);
-        if ($append['plain'] !== '') {
-            $text = trim($text . "\n\n" . $append['plain']);
-        }
-        return self::limit_text($text, $settings);
+        return self::append_plain_tail_preserving_end($text, (string)$append['plain'], $settings);
     }
 
     private static function build_formatted_text(int $post_id, array $settings): string {
@@ -1788,14 +1785,8 @@ private static function build_test_content(array $settings): array {
         }
         $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
         if (mb_strlen(self::clean_publish_text(wp_strip_all_tags($with_fields)), 'UTF-8') > $max) {
-            $append_plain = $append['plain'] !== '' ? "\n\n".$append['plain'] : '';
             $base_plain = self::clean_publish_text(wp_strip_all_tags(self::append_custom_fields_formatted($composed, $post_id, $settings)));
-            $base_budget = max(0, $max - mb_strlen(self::clean_publish_text($append_plain), 'UTF-8'));
-            if ($base_budget <= 0) {
-                return self::limit_text(self::clean_publish_text($append_plain), $settings);
-            }
-            $trimmed_base = self::limit_text($base_plain, array_merge($settings, ['max_text_limit' => $base_budget]));
-            return self::limit_text(trim($trimmed_base . $append_plain), $settings);
+            return self::append_plain_tail_preserving_end($base_plain, (string)$append['plain'], $settings);
         }
         return $with_fields;
     }
@@ -1935,7 +1926,11 @@ private static function build_test_content(array $settings): array {
     private static function build_text(int $post_id, array $settings): string {
         $override = trim((string)get_post_meta($post_id,self::META_OVERRIDE,true));
         $override = str_replace(["\r\n","\r"], "\n", $override);
-        if ($override !== '') return self::append_custom_fields($override, $post_id, $settings);
+        $append = self::get_append_text_variants($settings);
+        if ($override !== '') {
+            $text = self::append_custom_fields($override, $post_id, $settings);
+            return self::append_plain_tail_preserving_end($text, (string)$append['plain'], $settings);
+        }
 
         $title = self::clean_publish_text((string)get_the_title($post_id));
 
@@ -1950,11 +1945,26 @@ private static function build_test_content(array $settings): array {
 
         $base = trim($title . "\n\n" . $excerpt);
         $text = self::append_custom_fields($base, $post_id, $settings);
-        $append = self::get_append_text_variants($settings);
-        if ($append['plain'] !== '') {
-            $text = trim($text . "\n\n" . $append['plain']);
+        return self::append_plain_tail_preserving_end($text, (string)$append['plain'], $settings);
+    }
+
+    private static function append_plain_tail_preserving_end(string $base_text, string $append_plain, array $settings): string {
+        $append_plain = self::clean_publish_text($append_plain);
+        if ($append_plain === '') {
+            return self::limit_text($base_text, $settings);
         }
-        return self::limit_text($text, $settings);
+
+        $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
+        $tail = "\n\n" . $append_plain;
+        $tail_len = mb_strlen($tail, 'UTF-8');
+        $base_budget = max(0, $max - $tail_len);
+
+        if ($base_budget <= 0) {
+            return self::limit_text($append_plain, $settings);
+        }
+
+        $base = self::limit_text($base_text, array_merge($settings, ['max_text_limit' => $base_budget]));
+        return self::limit_text(trim($base . $tail), $settings);
     }
 
     private static function append_custom_fields(string $text, int $post_id, array $settings): string {
