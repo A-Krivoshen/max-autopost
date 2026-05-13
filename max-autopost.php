@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.10.6
+ * Version: 1.10.7
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.10.6';
+    private const VERSION = '1.10.7';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
@@ -956,10 +956,6 @@ public static function handle_send_test(): void {
     if (!empty($s['debug'])) {
         self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; button_count='.(int)count($buttons).'; has_image='.(int)$test_has_image);
     }
-    if (!empty($s['debug'])) {
-        self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; has_button='.(int)!empty($s['add_button']));
-    }
-
     self::log('test_send_mode', 0, 0, $test_send_mode);
 
     $dispatch = self::dispatch_to_targets(
@@ -1211,6 +1207,9 @@ public static function handle_send_test(): void {
             'has_button'=>(int)!empty($s['add_button']),
             'button_text'=>(string)$s['button_text'],
             'url'=>$url,
+            'has_subscribe_button'=>(int)!empty($s['add_subscribe_button']),
+            'subscribe_button_text'=>(string)($s['subscribe_button_text'] ?? ''),
+            'subscribe_button_url'=>(string)($s['subscribe_button_url'] ?? ''),
             'targets'=>$targets,
             'post_modified_gmt'=>get_post_modified_time('U', true, $post_id),
         ];
