@@ -221,7 +221,7 @@ final class KRV_MAX_Autopost {
         $in = is_array($in) ? $in : [];
 
         $out = [];
-        $out['token']   = isset($in['token']) ? trim((string)$in['token']) : $d['token'];
+        $out['token']   = isset($in['token']) ? self::sanitize_token_value((string)$in['token']) : $d['token'];
         $out['chat_id'] = self::sanitize_chat_id(isset($in['chat_id']) ? (string)$in['chat_id'] : $d['chat_id']);
         $out['additional_chat_ids'] = self::normalize_chat_ids_text(isset($in['additional_chat_ids']) ? (string)$in['additional_chat_ids'] : $d['additional_chat_ids']);
 
@@ -237,7 +237,7 @@ final class KRV_MAX_Autopost {
         $out['add_subscribe_button'] = !empty($in['add_subscribe_button']) ? 1 : 0;
         $out['subscribe_button_text'] = isset($in['subscribe_button_text']) ? sanitize_text_field((string)$in['subscribe_button_text']) : $d['subscribe_button_text'];
         if ($out['subscribe_button_text'] === '') $out['subscribe_button_text'] = $d['subscribe_button_text'];
-        $out['subscribe_button_url'] = isset($in['subscribe_button_url']) ? esc_url_raw((string)$in['subscribe_button_url']) : $d['subscribe_button_url'];
+        $out['subscribe_button_url'] = isset($in['subscribe_button_url']) ? self::sanitize_http_url((string)$in['subscribe_button_url']) : $d['subscribe_button_url'];
 
         $text_limit = isset($in['max_text_limit']) ? (int)$in['max_text_limit'] : (int)$d['max_text_limit'];
         $out['max_text_limit'] = self::normalize_text_limit($text_limit);
@@ -264,11 +264,31 @@ final class KRV_MAX_Autopost {
         return $out;
     }
 
+    private static function sanitize_token_value(string $token): string {
+        $token = preg_replace('/[\x00-\x1F\x7F]+/u', '', $token);
+        return trim((string)$token);
+    }
+
+    private static function sanitize_http_url(string $url): string {
+        $url = trim($url);
+        if ($url === '') {
+            return '';
+        }
+
+        $url = esc_url_raw($url, ['http', 'https']);
+        if ($url === '') {
+            return '';
+        }
+
+        $scheme = strtolower((string)(wp_parse_url($url, PHP_URL_SCHEME) ?: ''));
+        return in_array($scheme, ['http', 'https'], true) ? $url : '';
+    }
+
     private static function token(array $s): string {
         if (defined('KRV_MAX_TOKEN') && is_string(KRV_MAX_TOKEN) && trim(KRV_MAX_TOKEN) !== '') {
-            return trim(KRV_MAX_TOKEN);
+            return self::sanitize_token_value((string)KRV_MAX_TOKEN);
         }
-        return (string)$s['token'];
+        return self::sanitize_token_value((string)$s['token']);
     }
 
     private static function chat_id(array $s): string {
@@ -712,6 +732,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     public static function render_metabox(WP_Post $post): void {
+        if (!current_user_can('edit_post', $post->ID)) return;
+
         wp_nonce_field('krv_max_metabox','krv_max_metabox_nonce');
 
         $disable = (int)get_post_meta($post->ID,self::META_DISABLE,true);
@@ -1045,6 +1067,9 @@ public static function handle_send_test(): void {
 
         $post_id = isset($_GET['post_id']) ? (int)$_GET['post_id'] : 0;
         if (!$post_id) wp_die('Bad request');
+        $post = get_post($post_id);
+        if (!$post) wp_die('Bad request');
+        if (!current_user_can('edit_post', $post_id)) wp_die('Forbidden');
         check_admin_referer('krv_max_send_now_'.$post_id);
 
         $res = self::send($post_id);
@@ -1082,7 +1107,11 @@ public static function handle_send_test(): void {
 
         $post_id = isset($_GET['post_id']) ? (int)$_GET['post_id'] : 0;
         if (!$post_id) wp_die('Bad request');
+        $post = get_post($post_id);
+        if (!$post) wp_die('Bad request');
+        if (!current_user_can('edit_post', $post_id)) wp_die('Forbidden');
         check_admin_referer('krv_max_queue_now_'.$post_id);
+        if (!self::is_supported_post_type($post->post_type)) wp_die('Bad request');
 
         self::queue_post($post_id,'Manual queue');
         self::trigger_queue_worker();
@@ -1156,6 +1185,7 @@ public static function handle_send_test(): void {
 
     public static function row_action(array $actions, WP_Post $post): array {
         if (!self::is_supported_post_type($post->post_type)) return $actions;
+        if (!current_user_can('edit_post', $post->ID)) return $actions;
 
         $url = wp_nonce_url(
             admin_url('admin-post.php?action=krv_max_send_now&post_id='.(int)$post->ID),
@@ -1178,16 +1208,23 @@ public static function handle_send_test(): void {
     public static function handle_bulk(string $redirect_to, string $doaction, array $post_ids): string {
         if ($doaction !== 'krv_max_bulk') return $redirect_to;
 
+        $queued = 0;
+
         foreach ($post_ids as $id) {
             $post = get_post((int)$id);
-            if (!$post || !self::is_supported_post_type($post->post_type)) {
+            if (!$post || !self::is_supported_post_type($post->post_type) || !current_user_can('edit_post', (int)$id)) {
                 continue;
             }
             self::queue_post((int)$id,'Bulk queue');
+            $queued++;
         }
 
-        self::trigger_queue_worker();
-        self::notice('success','Посты добавлены в очередь.');
+        if ($queued > 0) {
+            self::trigger_queue_worker();
+            self::notice('success','Посты добавлены в очередь.');
+        } else {
+            self::notice('warning','Нет доступных постов для постановки в очередь.');
+        }
         return $redirect_to;
     }
 
@@ -1311,7 +1348,7 @@ public static function handle_send_test(): void {
         ]);
 
         if (is_wp_error($r1)) {
-            self::log('upload_step1', 0, $post_id, $r1->get_error_message());
+            self::log('upload_step1', 0, $post_id, self::sanitize_upload_log_text($r1->get_error_message()));
             return false;
         }
 
@@ -1319,13 +1356,13 @@ public static function handle_send_test(): void {
         $body1 = (string)wp_remote_retrieve_body($r1);
 
         if ($code1 < 200 || $code1 >= 300) {
-            self::log('upload_step1', $code1, $post_id, 'HTTP '.$code1.': '.self::short($body1));
+            self::log('upload_step1', $code1, $post_id, 'HTTP '.$code1.': '.self::sanitize_upload_log_text($body1));
             return false;
         }
 
         $j1 = json_decode($body1, true);
         if (!is_array($j1) || empty($j1['url'])) {
-            self::log('upload_step1', $code1, $post_id, 'Bad JSON: '.self::short($body1));
+            self::log('upload_step1', $code1, $post_id, 'Bad JSON: '.self::sanitize_upload_log_text($body1));
             return false;
         }
 
@@ -1344,12 +1381,12 @@ public static function handle_send_test(): void {
         curl_close($ch);
 
         if ($out === false) {
-            self::log('upload_step2', $code2 ?: 0, $post_id, 'cURL error: '.$cerr);
+            self::log('upload_step2', $code2 ?: 0, $post_id, 'cURL error: '.self::sanitize_upload_log_text($cerr));
             return false;
         }
 
         if ($code2 < 200 || $code2 >= 300) {
-            self::log('upload_step2', $code2, $post_id, 'HTTP '.$code2.': '.self::short((string)$out));
+            self::log('upload_step2', $code2, $post_id, 'HTTP '.$code2.': '.self::sanitize_upload_log_text((string)$out));
             return false;
         }
 
@@ -1358,7 +1395,7 @@ public static function handle_send_test(): void {
         // ✅ FIX (your log case): MAX may return nested objects, e.g. {"photos":{...:{token:"..."}}}
         // We must accept any valid JSON object/array and pass it as-is into image.payload.
         if (!is_array($j2) || empty($j2)) {
-            self::log('upload_step2', $code2, $post_id, 'Bad JSON: '.self::short((string)$out));
+            self::log('upload_step2', $code2, $post_id, 'Bad JSON: '.self::sanitize_upload_log_text((string)$out));
             return false;
         }
 
@@ -1484,7 +1521,7 @@ public static function handle_send_test(): void {
 
         if (is_wp_error($r)) {
             $msg = $r->get_error_message();
-            self::log('send', 0, $post_id, '[chat_id='.$chat_id.'] WP_Error: '.$msg);
+            self::log('send', 0, $post_id, '[chat_id='.self::mask_chat_id_for_log($chat_id).'] WP_Error: '.$msg);
             return ['ok'=>false, 'message'=>$msg, 'message_id'=>'', 'http'=>0];
         }
 
@@ -1492,7 +1529,7 @@ public static function handle_send_test(): void {
         $body = (string)wp_remote_retrieve_body($r);
 
         if ($code >= 200 && $code < 300) {
-            if ($debug && $body !== '') self::log('send', $code, $post_id, '[chat_id='.$chat_id.'] Response: '.self::short($body));
+            if ($debug && $body !== '') self::log('send', $code, $post_id, '[chat_id='.self::mask_chat_id_for_log($chat_id).'] Response: '.self::short($body));
             $decoded = json_decode($body, true);
             $message_id = '';
             if (is_array($decoded)) {
@@ -1507,7 +1544,7 @@ public static function handle_send_test(): void {
         }
 
         $error = 'HTTP '.$code.': '.self::short($body);
-        self::log('send', $code, $post_id, '[chat_id='.$chat_id.'] '.$error);
+        self::log('send', $code, $post_id, '[chat_id='.self::mask_chat_id_for_log($chat_id).'] '.$error);
         return ['ok'=>false, 'message'=>$error, 'message_id'=>'', 'http'=>$code];
     }
 
@@ -1530,7 +1567,7 @@ public static function handle_send_test(): void {
         'fallback',
         (int)($primary['http'] ?? 0),
         $post_id,
-        '[chat_id='.$chat_id.'] formatted failed, fallback to plain text without attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
+        '[chat_id='.self::mask_chat_id_for_log($chat_id).'] formatted failed, fallback to plain text without attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
     );
 
     $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
@@ -1553,7 +1590,7 @@ public static function handle_send_test(): void {
         }
 
         if (!empty($settings['add_subscribe_button'])) {
-            $sub_url = trim((string)($settings['subscribe_button_url'] ?? ''));
+            $sub_url = self::sanitize_http_url((string)($settings['subscribe_button_url'] ?? ''));
             if ($sub_url !== '') {
                 $buttons[] = [
                     'type' => 'link',
@@ -1618,6 +1655,32 @@ public static function handle_send_test(): void {
         return trim(sanitize_text_field($chat_id));
     }
 
+    private static function mask_chat_id_for_log(string $chat_id): string {
+        $chat_id = self::sanitize_chat_id($chat_id);
+        $len = strlen($chat_id);
+
+        if ($chat_id === '') {
+            return '[empty]';
+        }
+        if ($len <= 4) {
+            return str_repeat('*', $len);
+        }
+        if ($len <= 8) {
+            return substr($chat_id, 0, 1) . str_repeat('*', max(1, $len - 2)) . substr($chat_id, -1);
+        }
+
+        return substr($chat_id, 0, 2) . str_repeat('*', max(1, $len - 4)) . substr($chat_id, -2);
+    }
+
+    private static function sanitize_upload_log_text(string $text): string {
+        $text = preg_replace('/"((?:token|authorization|upload_url|download_url|url))"\s*:\s*"[^"]*"/i', '"$1":"[redacted]"', $text);
+        $text = preg_replace("/'((?:token|authorization|upload_url|download_url|url))'\\s*:\\s*'[^']*'/i", "'$1':'[redacted]'", $text);
+        $text = preg_replace('/\b((?:token|authorization|upload_url|download_url|url))\b\s*=\s*([^\s,&;]+)/i', '$1=[redacted]', $text);
+        $text = preg_replace('/\b(Bearer)\s+[A-Za-z0-9\-_\.\=:\/\+]+/i', '$1 [redacted]', $text);
+        $text = preg_replace('~https?://[^\s"\'<>]+~i', '[redacted_url]', $text);
+        return (string)$text;
+    }
+
     private static function normalize_chat_ids_text(string $raw): string {
         $rows = preg_split('/\r\n|\r|\n/', $raw) ?: [];
         $normalized = [];
@@ -1667,7 +1730,7 @@ private static function has_media_payload_markers($payload): bool {
             $results[] = $row;
             self::log_target_result($post_id, $row);
             if ($debug) {
-                self::log('dispatch_debug', 0, $post_id, '[chat_id='.$chat_id.'] format_mode='.$format_mode.'; parse_mode='.(string)($send['parse_mode'] ?? '').'; fallback='.(int)!empty($send['fallback_used']));
+                self::log('dispatch_debug', 0, $post_id, '[chat_id='.self::mask_chat_id_for_log($chat_id).'] format_mode='.$format_mode.'; parse_mode='.(string)($send['parse_mode'] ?? '').'; fallback='.(int)!empty($send['fallback_used']));
             }
 
             if ($row['status'] === 'success') {
@@ -1697,7 +1760,7 @@ private static function has_media_payload_markers($payload): bool {
         $message_id = (string)($result['message_id'] ?? '');
         $error = (string)($result['error'] ?? '');
 
-        $msg = '[chat_id='.$chat_id.'] status='.$status;
+        $msg = '[chat_id='.self::mask_chat_id_for_log($chat_id).'] status='.$status;
         if ($message_id !== '') {
             $msg .= '; message_id='.$message_id;
         }
