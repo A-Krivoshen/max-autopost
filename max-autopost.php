@@ -353,9 +353,9 @@ final class KRV_MAX_Autopost {
         echo '</div>';
 
         echo '<div style="max-width:980px;background:#fff;border:1px solid #dcdcde;padding:14px;">';
-        echo '<p style="margin-top:0;"><strong>Партнерский блок</strong> (рекламный виджет):</p>';
-        echo '<script src="//wpwidget.ru/js/wps-widget-entry.min.js" async></script>';
-        echo '<div class="wps-widget" data-w="//wpwidget.ru/greetings?orientation=3&pid=11291"></div>';
+        echo '<p style="margin-top:0;"><strong>Партнерский блок</strong>: FirstVDS.</p>';
+        echo '<p style="margin:0 0 12px;">Надежный VPS/VDS-хостинг для сайтов, проектов и серверных задач.</p>';
+        echo '<p style="margin:0;"><a class="button button-secondary" target="_blank" rel="noopener noreferrer" href="'.esc_url('https://firstvds.ru/?from=1168822').'">Перейти на FirstVDS</a></p>';
         echo '</div>';
     }
 
