@@ -1,4 +1,15 @@
 # Changelog
+## 1.10.10
+
+- Добавлена кнопка «Переочередить опубликованные с текущими настройками».
+- Переочередь очищает старый sent_hash, ошибки и результаты отправки.
+- Удалён внешний wpwidget.ru JavaScript из админки.
+- Партнёрский блок заменён на статичный FirstVDS-блок без внешнего JS.
+- Добавлены per-post capability checks для ручной отправки и очереди.
+- chat_id теперь маскируется в логах.
+- Upload-логи очищаются от token/url/authorization-подобных значений.
+- subscribe_button_url ограничен http/https.
+- token очищается от CR/LF/control chars.
 ## 1.10.9
 - fixed plain/excerpt text limiting so `post_append_text` is preserved at the end by trimming the main text first
 ## 1.10.8
