@@ -72,6 +72,7 @@ final class KRV_MAX_Autopost {
         add_action('admin_post_krv_max_send_now', [__CLASS__, 'handle_send_now']);
         add_action('admin_post_krv_max_queue_now', [__CLASS__, 'handle_queue_now']);
         add_action('admin_post_krv_max_queue_all_published', [__CLASS__, 'handle_queue_all_published']);
+        add_action('admin_post_krv_max_requeue_published_current_settings', [__CLASS__, 'handle_requeue_published_current_settings']);
         add_action('admin_post_krv_max_worker_enable', [__CLASS__, 'handle_worker_enable']);
         add_action('admin_post_krv_max_worker_disable', [__CLASS__, 'handle_worker_disable']);
 
@@ -533,6 +534,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<input type="hidden" name="action" value="krv_max_queue_all_published">';
         submit_button('Поставить все опубликованные в очередь','secondary','submit',false,['onclick'=>"return confirm('Добавить все опубликованные материалы в очередь MAX?');"]);
         echo '</form>';
+        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+        wp_nonce_field('krv_max_requeue_published_current_settings');
+        echo '<input type="hidden" name="action" value="krv_max_requeue_published_current_settings">';
+        submit_button('Переочередить опубликованные с текущими настройками','secondary','submit',false,['onclick'=>"return confirm('Переочередить опубликованные материалы с текущими настройками MAX? Это очистит предыдущие результаты отправки.');"]);
+        echo '</form>';
         echo '</div>';
 
         echo '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 12px;">';
@@ -768,6 +774,13 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         update_post_meta($post_id,self::META_QUEUEDAT,$now);
         update_post_meta($post_id,self::META_QSTAMP,self::current_install_stamp());
         self::log('queue',0,$post_id,$why ?: 'queued');
+    }
+
+    private static function requeue_post_with_current_settings(int $post_id, string $why=''): void {
+        delete_post_meta($post_id,self::META_SENTHASH);
+        delete_post_meta($post_id,self::META_ERROR);
+        delete_post_meta($post_id,self::META_TARGET_RESULTS);
+        self::queue_post($post_id, $why);
     }
 
     private static function trigger_queue_worker(): void {
@@ -1096,6 +1109,45 @@ public static function handle_send_test(): void {
 
         self::trigger_queue_worker();
         self::notice('success','Все опубликованные материалы добавлены в очередь: '.count($posts));
+        wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
+        exit;
+    }
+
+    public static function handle_requeue_published_current_settings(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_requeue_published_current_settings');
+
+        $posts = get_posts([
+            'post_type'=>self::supported_post_types(),
+            'post_status'=>'publish',
+            'numberposts'=>-1,
+            'fields'=>'ids',
+        ]);
+
+        $requeued = 0;
+        $skipped_disabled = 0;
+
+        foreach ($posts as $id) {
+            $post_id = (int)$id;
+            if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) {
+                $skipped_disabled++;
+                continue;
+            }
+
+            self::requeue_post_with_current_settings($post_id,'Requeue published with current settings');
+            $requeued++;
+        }
+
+        if ($requeued > 0) {
+            self::trigger_queue_worker();
+        }
+
+        $message = 'Опубликованные материалы переочередены с текущими настройками: '.$requeued;
+        if ($skipped_disabled > 0) {
+            $message .= '. Пропущено с отметкой "Не отправлять в MAX": '.$skipped_disabled;
+        }
+
+        self::notice('success', $message);
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
     }
