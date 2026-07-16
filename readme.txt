@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.11.0
+Stable tag: 1.11.1
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,11 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.11.1 =
+* Security/UX: SSRF guard upload_url, capability settings, token empty=keep + warning (wp-config safer).
+* Тест не включает воркер по умолчанию; multi-chat counter; bulk пачками 50 + confirm.
+* Upgrade notice; clear logs; metabox status; POST send/queue; cron single-event dedupe.
+
 = 1.11.0 =
 * API: `platform-api2.max.ru` (миграция до 19.07.2026).
 * Галочка «Учитывать Текст после записи в общем лимите» (`append_in_limit`).

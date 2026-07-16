@@ -1,4 +1,16 @@
 # Changelog
+## 1.11.1
+- Security/UX hardening после аудита.
+- Token: пустое поле = не менять; предупреждение что ключ в БД менее безопасен → `wp-config.php` `KRV_MAX_TOKEN`.
+- `register_setting` capability `manage_options`.
+- SSRF guard для `upload_url` (https + allowlist доменов MAX/CDN).
+- cURL upload: только HTTPS protocols.
+- Тест **не** включает автоворкер по умолчанию (`enable_worker_after_test`).
+- Счётчик целей (chat ID) + предупреждение multi-chat.
+- Confirm + оценка N×M; bulk/requeue/errors **пачками по 50**.
+- Не копить single-event cron; clear hook на upgrade/deactivate.
+- Notice после обновления; очистка логов; статус MAX в метабоксе.
+- POST-формы для send/queue в админке; RU-подписи; секции настроек; реклама помечена.
 ## 1.11.0
 - API MAX: `platform-api2.max.ru` (миграция с `platform-api.max.ru`, дедлайн 19.07.2026).
 - Настройка **«Учитывать Текст после записи в общем лимите»** (`append_in_limit`, по умолчанию вкл).

@@ -1,9 +1,9 @@
-# MAX Autopost (Free) v1.11.0
+# MAX Autopost (Free) v1.11.1
 
 Плагин для автоматической отправки постов из WordPress в Max.
 
 ### Установка
-1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.0/max-autopost-1.11.0.zip)
+1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.1/max-autopost-1.11.1.zip)
 2. Установи через WordPress → Плагины → Добавить новый → Загрузить плагин
 
 ### Автообновление
@@ -18,6 +18,11 @@
 
 ---
 ⭐ MIT License • [GitHub](https://github.com/A-Krivoshen/max-autopost)
+
+## Что нового в 1.11.1
+- Security/UX hardening: SSRF guard, settings capability, token warning → `wp-config.php`.
+- Тест не включает автоворкер без галочки; multi-chat counter; bulk по 50 + confirm.
+- Upgrade notice, clear logs, metabox status, cron single-event dedupe.
 
 ## Что нового в 1.11.0
 - API MAX: **`platform-api2.max.ru`** (до 19.07.2026).

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.11.0
+ * Version: 1.11.1
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.0';
+    private const VERSION = '1.11.1';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -40,6 +40,7 @@ final class KRV_MAX_Autopost {
     private const CRON_HOOK     = 'krv_max_autopost_cron';
     private const CRON_SCHEDULE = 'krv_max_minute';
     private const CRON_LOCK_KEY = 'krv_max_autopost_lock';
+    private const UPGRADE_NOTICE_OPT = 'krv_max_autopost_upgrade_notice';
 
     private const GITHUB_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost';
 
@@ -47,6 +48,8 @@ final class KRV_MAX_Autopost {
     private const MAX_TEXT   = 3900;
     private const BATCH_LIMIT = 1;
     private const LOG_LIMIT   = 50;
+    /** Max posts touched per bulk queue/requeue click (avoid timeouts / accidental mass send). */
+    private const REQUEUE_BATCH = 50;
 
     // Retry backoff (attempt 1..N). After last element -> error.
     private static array $backoff = [60, 180, 600, 1800, 3600];
@@ -77,6 +80,8 @@ final class KRV_MAX_Autopost {
         add_action('admin_post_krv_max_requeue_published_current_settings', [__CLASS__, 'handle_requeue_published_current_settings']);
         add_action('admin_post_krv_max_worker_enable', [__CLASS__, 'handle_worker_enable']);
         add_action('admin_post_krv_max_worker_disable', [__CLASS__, 'handle_worker_disable']);
+        add_action('admin_post_krv_max_clear_logs', [__CLASS__, 'handle_clear_logs']);
+        add_action('admin_post_krv_max_dismiss_upgrade_notice', [__CLASS__, 'handle_dismiss_upgrade_notice']);
 
         // Register row/bulk hooks after all CPTs are registered.
         add_action('init', [__CLASS__, 'register_post_type_hooks'], 20);
@@ -110,12 +115,15 @@ final class KRV_MAX_Autopost {
         update_option(self::CUTOFF_OPT, $cutoff, false);
         update_option(self::INSTALL_STAMP_OPT, self::new_install_stamp(), false);
         update_option(self::WORKER_ENABLED_OPT, 0, false);
+        update_option(self::UPGRADE_NOTICE_OPT, self::VERSION, false);
         self::quarantine_stale_queue($cutoff);
     }
 
     public static function deactivate(): void {
         $ts = wp_next_scheduled(self::CRON_HOOK);
         if ($ts) wp_unschedule_event($ts, self::CRON_HOOK);
+        // Clear pending single-events for this hook.
+        wp_clear_scheduled_hook(self::CRON_HOOK);
     }
 
     /* ================= SETTINGS ================= */
@@ -127,11 +135,18 @@ final class KRV_MAX_Autopost {
             return;
         }
 
+        $from = $stored !== '' ? $stored : 'unknown';
         $cutoff = time();
         update_option(self::VER_OPT, self::VERSION, false);
         update_option(self::CUTOFF_OPT, $cutoff, false);
         update_option(self::INSTALL_STAMP_OPT, self::new_install_stamp(), false);
         update_option(self::WORKER_ENABLED_OPT, 0, false);
+        update_option(self::UPGRADE_NOTICE_OPT, self::VERSION . '|' . $from, false);
+        // Drop leftover single-event spam from older versions.
+        wp_clear_scheduled_hook(self::CRON_HOOK);
+        if (!wp_next_scheduled(self::CRON_HOOK)) {
+            wp_schedule_event(time() + 60, self::CRON_SCHEDULE, self::CRON_HOOK);
+        }
         self::quarantine_stale_queue($cutoff);
     }
 
@@ -203,6 +218,7 @@ final class KRV_MAX_Autopost {
             'custom_fields_map'     => '',
             'notify'        => 1,
             'debug'         => 0,
+            'enable_worker_after_test' => 0,
         ];
     }
 
@@ -217,15 +233,24 @@ final class KRV_MAX_Autopost {
             'type'              => 'array',
             'sanitize_callback' => [__CLASS__, 'sanitize_settings'],
             'default'           => self::defaults(),
+            'capability'        => 'manage_options',
         ]);
     }
 
     public static function sanitize_settings($in): array {
         $d = self::defaults();
         $in = is_array($in) ? $in : [];
+        $prev = get_option(self::OPT, []);
+        $prev = is_array($prev) ? $prev : [];
 
         $out = [];
-        $out['token']   = isset($in['token']) ? self::sanitize_token_value((string)$in['token']) : $d['token'];
+        // Empty token field = keep previously saved token (so password field can stay blank).
+        $token_in = isset($in['token']) ? self::sanitize_token_value((string)$in['token']) : '';
+        if ($token_in === '' || $token_in === '********') {
+            $out['token'] = self::sanitize_token_value((string)($prev['token'] ?? $d['token']));
+        } else {
+            $out['token'] = $token_in;
+        }
         $out['chat_id'] = self::sanitize_chat_id(isset($in['chat_id']) ? (string)$in['chat_id'] : $d['chat_id']);
         $out['additional_chat_ids'] = self::normalize_chat_ids_text(isset($in['additional_chat_ids']) ? (string)$in['additional_chat_ids'] : $d['additional_chat_ids']);
 
@@ -266,6 +291,7 @@ final class KRV_MAX_Autopost {
 
         $out['notify'] = !empty($in['notify']) ? 1 : 0;
         $out['debug']  = !empty($in['debug']) ? 1 : 0;
+        $out['enable_worker_after_test'] = !empty($in['enable_worker_after_test']) ? 1 : 0;
 
         return $out;
     }
@@ -341,6 +367,21 @@ final class KRV_MAX_Autopost {
             echo '<div class="notice notice-' . esc_attr($type) . ' is-dismissible"><p>' . esc_html($msg['text']) . '</p></div>';
             delete_transient('krv_max_notice');
         }
+
+        $upgrade = (string)get_option(self::UPGRADE_NOTICE_OPT, '');
+        if ($upgrade !== '') {
+            $parts = explode('|', $upgrade, 2);
+            $ver = $parts[0] !== '' ? $parts[0] : self::VERSION;
+            $dismiss = wp_nonce_url(
+                admin_url('admin-post.php?action=krv_max_dismiss_upgrade_notice'),
+                'krv_max_dismiss_upgrade_notice'
+            );
+            echo '<div class="notice notice-info"><p><strong>MAX Autopost '.esc_html($ver).'</strong> — плагин обновлён. ';
+            echo 'API: <code>platform-api2.max.ru</code>. Автоворкер выключен, старая очередь заблокирована (защита от массовой рассылки). ';
+            echo 'Проверьте <a href="'.esc_url(admin_url('admin.php?page=krv-max-autopost&tab=settings')).'">настройки</a> и «Отправить тест». ';
+            echo 'Если SSL-ошибка — сертификат Минцифры на хостинге: <a href="https://www.gosuslugi.ru/crt" target="_blank" rel="noopener noreferrer">gosuslugi.ru/crt</a>. ';
+            echo '<a href="'.esc_url($dismiss).'">Скрыть</a>.</p></div>';
+        }
     }
 
     private static function notice(string $type, string $text): void {
@@ -379,10 +420,19 @@ final class KRV_MAX_Autopost {
         echo '</div>';
 
         echo '<div style="max-width:980px;background:#fff;border:1px solid #dcdcde;padding:14px;">';
-        echo '<p style="margin-top:0;"><strong>Партнерский блок</strong>: FirstVDS.</p>';
-        echo '<p style="margin:0 0 12px;">Надежный VPS/VDS-хостинг для сайтов, проектов и серверных задач.</p>';
+        echo '<p style="margin-top:0;"><strong>Реклама</strong> · партнёрский блок FirstVDS.</p>';
+        echo '<p style="margin:0 0 12px;">VPS/VDS-хостинг для сайтов, проектов и серверных задач.</p>';
         echo '<p style="margin:0;"><a class="button button-secondary" target="_blank" rel="noopener noreferrer" href="'.esc_url('https://firstvds.ru/?from=1168822').'">Перейти на FirstVDS</a></p>';
         echo '</div>';
+    }
+
+    private static function settings_section(string $title, string $desc = ''): void {
+        echo '</tbody></table>';
+        echo '<h2 style="margin:22px 0 8px;">'.esc_html($title).'</h2>';
+        if ($desc !== '') {
+            echo '<p class="description" style="margin-top:0;">'.esc_html($desc).'</p>';
+        }
+        echo '<table class="form-table" role="presentation"><tbody>';
     }
 
     private static function tab_link(string $tab, string $label, string $active): string {
@@ -392,19 +442,45 @@ final class KRV_MAX_Autopost {
     }
 
     private static function tab_settings(array $s): void {
+        $targets = self::target_chat_ids($s);
+        $targets_n = count($targets);
+        $token_from_config = defined('KRV_MAX_TOKEN') && is_string(KRV_MAX_TOKEN) && trim(KRV_MAX_TOKEN) !== '';
+        $has_saved_token = !$token_from_config && self::sanitize_token_value((string)($s['token'] ?? '')) !== '';
+
         echo '<form method="post" action="options.php">';
         settings_fields(self::OPT);
 
-        echo '<table class="form-table"><tbody>';
-        echo '<tr><th>Token</th><td><input type="password" class="regular-text" name="'.esc_attr(self::OPT).'[token]" value="'.esc_attr($s['token']).'">';
-        echo '<p class="description">Можно вынести токен в wp-config.php: <code>define(\'KRV_MAX_TOKEN\', \'...\');</code></p></td></tr>';
+        echo '<table class="form-table" role="presentation"><tbody>';
+
+        echo '<tr><th colspan="2" style="padding-bottom:0;"><h2 style="margin:0;">Подключение</h2></th></tr>';
+
+        echo '<tr><th>Token</th><td>';
+        if ($token_from_config) {
+            echo '<input type="password" class="regular-text" value="" disabled placeholder="Задан в wp-config.php">';
+            echo '<p class="description">Используется <code>define(\'KRV_MAX_TOKEN\', \'...\');</code> — это предпочтительный и более безопасный способ.</p>';
+        } else {
+            echo '<input type="password" class="regular-text" name="'.esc_attr(self::OPT).'[token]" value="" autocomplete="new-password" placeholder="'.esc_attr($has_saved_token ? '•••• сохранён (оставьте пустым, чтобы не менять)' : 'Вставьте token бота').'">';
+            echo '<p class="description" style="color:#996800;"><strong>Безопасность:</strong> token в настройках хранится в базе WordPress (таблица options). Это удобно, но при утечке бэкапа/БД ключ скомпрометирован. Надёжнее вынести в <code>wp-config.php</code>: <code>define(\'KRV_MAX_TOKEN\', \'ваш_токен\');</code> — тогда поле в админке можно не заполнять.</p>';
+        }
+        echo '</td></tr>';
 
         echo '<tr><th>Основной Chat ID</th><td><input type="text" class="regular-text" name="'.esc_attr(self::OPT).'[chat_id]" value="'.esc_attr($s['chat_id']).'">';
-        echo '<p class="description">Можно вынести Chat ID в wp-config.php: <code>define(\'KRV_MAX_CHAT_ID\', \'...\');</code></p></td></tr>';
+        echo '<p class="description">Можно вынести в wp-config.php: <code>define(\'KRV_MAX_CHAT_ID\', \'...\');</code></p></td></tr>';
         echo '<tr><th>Дополнительные Chat ID</th><td><textarea name="'.esc_attr(self::OPT).'[additional_chat_ids]" class="large-text code" rows="5" placeholder="123456
 -100987654
 chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
-        echo '<p class="description">По одному значению на строку. Поддерживаются ID каналов и групповых чатов MAX. Пустые строки игнорируются, дубликаты убираются автоматически.</p></td></tr>';
+        echo '<p class="description">По одному ID на строку (каналы и группы). Пустые строки и дубликаты отбрасываются.</p>';
+        if ($targets_n > 0) {
+            $warn = $targets_n > 1
+                ? ' <strong style="color:#b32d2e;">Каждый пост уйдёт в '.$targets_n.' чата(ов) = до '.$targets_n.' сообщений в MAX.</strong>'
+                : '';
+            echo '<p class="description"><strong>Целей сейчас: '.esc_html((string)$targets_n).'.</strong>'.$warn.'</p>';
+        } else {
+            echo '<p class="description" style="color:#b32d2e;"><strong>Целей: 0.</strong> Укажите основной или дополнительные Chat ID.</p>';
+        }
+        echo '</td></tr>';
+
+        self::settings_section('Контент и картинка', 'Что попадает в текст сообщения MAX.');
 
         echo '<tr><th>Картинка</th><td>';
         echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[include_image]" value="1" '.checked((int)$s['include_image'],1,false).'> Включить изображение</label>';
@@ -420,17 +496,21 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
         echo '<p class="description">Можно отключить подстановку изображения сайта, если у записи нет своей картинки.</p>';
         echo '</td></tr>';
 
-        echo '<tr><th>Кнопка</th><td>';
-        echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_button]" value="1" '.checked((int)$s['add_button'],1,false).'> Включить кнопку “Читать”</label><br>';
+        self::settings_section('Кнопки', 'Inline-кнопки в сообщении MAX (attachment после картинки).');
+
+        echo '<tr><th>Кнопка «Читать»</th><td>';
+        echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_button]" value="1" '.checked((int)$s['add_button'],1,false).'> Включить кнопку «Читать»</label><br>';
         echo '<input type="text" name="'.esc_attr(self::OPT).'[button_text]" value="'.esc_attr($s['button_text']).'" style="width:220px;">';
-        echo '<p class="description">inline_keyboard идёт <strong>вторым attachment</strong> (после image, если он есть).</p>';
+        echo '<p class="description">Ссылка ведёт на запись сайта.</p>';
         echo '</td></tr>';
         echo '<tr><th>Кнопка подписки</th><td>';
-        echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_subscribe_button]" value="1" '.checked((int)$s['add_subscribe_button'],1,false).'> Включить кнопку “Подписаться”</label><br>';
+        echo '<label><input type="checkbox" name="'.esc_attr(self::OPT).'[add_subscribe_button]" value="1" '.checked((int)$s['add_subscribe_button'],1,false).'> Включить кнопку «Подписаться»</label><br>';
         echo '<input type="text" name="'.esc_attr(self::OPT).'[subscribe_button_text]" value="'.esc_attr($s['subscribe_button_text']).'" style="width:220px;" placeholder="Подписаться"> ';
         echo '<input type="url" class="regular-text" name="'.esc_attr(self::OPT).'[subscribe_button_url]" value="'.esc_attr($s['subscribe_button_url']).'" placeholder="https://max.ru/...">';
-        echo '<p class="description">Отдельная дополнительная кнопка. Не связана с <code>post_append_text</code>.</p>';
+        echo '<p class="description">Отдельная кнопка. Не связана с «Текстом после записи».</p>';
         echo '</td></tr>';
+
+        self::settings_section('Текст и формат');
 
         $append_preview = self::get_append_text_variants($s);
         $append_len = mb_strlen((string)$append_preview['plain'], 'UTF-8');
@@ -492,19 +572,39 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<p class="description">По одному полю на строку: <code>meta_key|Подпись</code> или только <code>meta_key</code>. Непустые значения добавляются в конец текста публикации.</p>';
         echo '</td></tr>';
 
-        echo '<tr><th>Notify</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[notify]" value="1" '.checked((int)$s['notify'],1,false).'> notify=true</label></td></tr>';
-        echo '<tr><th>Debug</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[debug]" value="1" '.checked((int)$s['debug'],1,false).'> расширенные логи</label></td></tr>';
+        self::settings_section('Очередь и отладка');
+
+        echo '<tr><th>Уведомления MAX</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[notify]" value="1" '.checked((int)$s['notify'],1,false).'> Отправлять с notify (пуш подписчикам)</label></td></tr>';
+        echo '<tr><th>Отладка</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[debug]" value="1" '.checked((int)$s['debug'],1,false).'> Расширенные логи (token/URL маскируются)</label></td></tr>';
+        echo '<tr><th>После теста</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[enable_worker_after_test]" value="1" '.checked((int)($s['enable_worker_after_test'] ?? 0),1,false).'> Включить автоворкер только если тест успешен</label>';
+        echo '<p class="description">По умолчанию <strong>выкл</strong>: успешный тест больше сам не запускает авторассылку очереди.</p></td></tr>';
         echo '</tbody></table>';
 
         submit_button('Сохранить');
         echo '</form>';
 
-        echo '<hr><h3>Тест</h3>';
+        echo '<hr><h2>Тест отправки</h2>';
+        if ($targets_n > 1) {
+            echo '<p class="description" style="color:#b32d2e;">Тест уйдёт в <strong>'.esc_html((string)$targets_n).'</strong> чата(ов).</p>';
+        }
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
         wp_nonce_field('krv_max_send_test');
         echo '<input type="hidden" name="action" value="krv_max_send_test">';
         submit_button('Отправить тест','secondary','submit',false);
         echo '</form>';
+    }
+
+    private static function count_published_supported(): int {
+        $q = new WP_Query([
+            'post_type' => self::supported_post_types(),
+            'post_status' => 'publish',
+            'posts_per_page' => 1,
+            'fields' => 'ids',
+            'no_found_rows' => false,
+            'update_post_meta_cache' => false,
+            'update_post_term_cache' => false,
+        ]);
+        return (int)$q->found_posts;
     }
 
     private static function queue_status_count(?string $status = null): int {
@@ -533,8 +633,14 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     private static function tab_queue(): void {
         $worker_on = self::is_worker_enabled();
-        $status_text = $worker_on ? 'ON' : 'OFF';
+        $status_text = $worker_on ? 'ВКЛ' : 'ВЫКЛ';
         $status_color = $worker_on ? '#2e7d32' : '#b71c1c';
+        $targets_n = count(self::target_chat_ids(self::get_settings()));
+        $pub_count = self::count_published_supported();
+        $err_count = self::queue_status_count('error');
+        $batch = self::REQUEUE_BATCH;
+        $est_all = $pub_count * max(1, $targets_n);
+        $est_batch = min($pub_count, $batch) * max(1, $targets_n);
 
         $status_filter = isset($_GET['qstatus']) ? sanitize_key((string)$_GET['qstatus']) : 'all';
         if (!in_array($status_filter, ['all', 'queued', 'error', 'partial_success', 'sent'], true)) {
@@ -542,11 +648,15 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         echo '<div style="margin:8px 0 12px;padding:8px 12px;background:#fff;border-left:4px solid '.esc_attr($status_color).';">';
-        echo '<strong>Статус автоворкера:</strong> <span style="color:'.esc_attr($status_color).';font-weight:700;">'.esc_html($status_text).'</span>';
+        echo '<strong>Автоворкер:</strong> <span style="color:'.esc_attr($status_color).';font-weight:700;">'.esc_html($status_text).'</span>';
         echo $worker_on
-            ? '<span style="margin-left:8px;color:#555;">Автоматическая обработка очереди включена.</span>'
-            : '<span style="margin-left:8px;color:#555;">Автоматическая обработка очереди выключена.</span>';
-        echo '</div>';
+            ? '<span style="margin-left:8px;color:#555;">очередь обрабатывается автоматически (1 пост / тик).</span>'
+            : '<span style="margin-left:8px;color:#555;">автоотправка выключена — только ручной запуск или включение воркера.</span>';
+        echo '<br><span class="description">Целей (chat ID): <strong>'.esc_html((string)$targets_n).'</strong>. Опубликовано подходящих записей: <strong>'.esc_html((string)$pub_count).'</strong>. ';
+        if ($targets_n > 1) {
+            echo '1 пост → до <strong>'.esc_html((string)$targets_n).'</strong> сообщений в MAX.';
+        }
+        echo '</span></div>';
 
         echo '<div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0;">';
 
@@ -570,28 +680,33 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             echo '</form>';
         }
 
-        echo '<p class="description" style="margin:6px 0 0;">Сохранение Token/Chat ID не запускает автоотправку старой очереди. Ручной запуск отправляет только 1 элемент за нажатие.</p>';
+        echo '<p class="description" style="margin:6px 0 0;flex-basis:100%;">Сохранение Token/Chat ID не гоняет старую очередь. Ручной запуск — 1 элемент. Массовые кнопки ниже берут пачками по '.esc_html((string)$batch).' постов.</p>';
 
+        $confirm_err = 'Вернуть в очередь ошибочные посты ('.(int)$err_count.')? Целей: '.(int)$targets_n.'.';
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
         wp_nonce_field('krv_max_requeue_errors');
         echo '<input type="hidden" name="action" value="krv_max_requeue_errors">';
-        submit_button('Requeue errors','secondary','submit',false);
+        submit_button('Вернуть ошибки в очередь','secondary','submit',false,['onclick'=>'return confirm('.wp_json_encode($confirm_err).');']);
         echo '</form>';
+
+        $confirm_all = 'Поставить в очередь до '.$batch.' опубликованных (из '.(int)$pub_count.')? Целей: '.(int)$targets_n.', ориентир до '.(int)$est_batch.' сообщений в MAX. Повторите кнопку для следующей пачки.';
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
         wp_nonce_field('krv_max_queue_all_published');
         echo '<input type="hidden" name="action" value="krv_max_queue_all_published">';
-        submit_button('Поставить все опубликованные в очередь','secondary','submit',false,['onclick'=>"return confirm('Добавить все опубликованные материалы в очередь MAX?');"]);
+        submit_button('В очередь: published (пачка '.$batch.')','secondary','submit',false,['onclick'=>'return confirm('.wp_json_encode($confirm_all).');']);
         echo '</form>';
+
+        $confirm_re = 'Переочередь до '.$batch.' published с текущими настройками (сброс sent-hash). Целей: '.(int)$targets_n.', ориентир до '.(int)$est_batch.' сообщений. Это может переотправить посты в MAX!';
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
         wp_nonce_field('krv_max_requeue_published_current_settings');
         echo '<input type="hidden" name="action" value="krv_max_requeue_published_current_settings">';
-        submit_button('Переочередить опубликованные с текущими настройками','secondary','submit',false,['onclick'=>"return confirm('Переочередить опубликованные материалы с текущими настройками MAX? Это очистит предыдущие результаты отправки.');"]);
+        submit_button('Переочередь published (пачка '.$batch.')','secondary','submit',false,['onclick'=>'return confirm('.wp_json_encode($confirm_re).');']);
         echo '</form>';
         echo '</div>';
 
         echo '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 12px;">';
         echo '<strong>Фильтр очереди:</strong>';
-        foreach (['all' => 'Все', 'queued' => 'queued', 'error' => 'error', 'partial_success' => 'partial_success', 'sent' => 'sent'] as $key => $label) {
+        foreach (['all' => 'Все', 'queued' => 'В очереди', 'error' => 'Ошибка', 'partial_success' => 'Частично', 'sent' => 'Отправлено'] as $key => $label) {
             $url = add_query_arg([
                 'page' => 'krv-max-autopost',
                 'tab' => 'queue',
@@ -611,7 +726,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         ];
 
         echo '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 14px;">';
-        foreach (['all' => 'Все', 'queued' => 'queued', 'error' => 'error', 'partial_success' => 'partial_success', 'sent' => 'sent'] as $key => $label) {
+        foreach (['all' => 'Все', 'queued' => 'В очереди', 'error' => 'Ошибка', 'partial_success' => 'Частично', 'sent' => 'Отправлено'] as $key => $label) {
             $url = add_query_arg([
                 'page' => 'krv-max-autopost',
                 'tab' => 'queue',
@@ -663,10 +778,18 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 echo '<td title="'.esc_attr($targets_summary).'" style="max-width:420px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'.esc_html($targets_summary).'</td>';
                 echo '<td title="'.esc_attr($err).'" style="max-width:520px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'.esc_html($err).'</td>';
 
-                $send_url = wp_nonce_url(admin_url('admin-post.php?action=krv_max_send_now&post_id='.(int)$id), 'krv_max_send_now_'.(int)$id);
-                $queue_url = wp_nonce_url(admin_url('admin-post.php?action=krv_max_queue_now&post_id='.(int)$id), 'krv_max_queue_now_'.(int)$id);
-                echo '<td><a class="button button-small" href="'.esc_url($send_url).'">Отправить</a> ';
-                echo '<a class="button button-small" href="'.esc_url($queue_url).'">В очередь</a></td>';
+                echo '<td style="white-space:nowrap;">';
+                echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:inline;">';
+                wp_nonce_field('krv_max_send_now_'.(int)$id);
+                echo '<input type="hidden" name="action" value="krv_max_send_now">';
+                echo '<input type="hidden" name="post_id" value="'.esc_attr((string)(int)$id).'">';
+                echo '<button type="submit" class="button button-small">Отправить</button></form> ';
+                echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:inline;">';
+                wp_nonce_field('krv_max_queue_now_'.(int)$id);
+                echo '<input type="hidden" name="action" value="krv_max_queue_now">';
+                echo '<input type="hidden" name="post_id" value="'.esc_attr((string)(int)$id).'">';
+                echo '<button type="submit" class="button button-small">В очередь</button></form>';
+                echo '</td>';
                 echo '</tr>';
             }
             wp_reset_postdata();
@@ -680,7 +803,13 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $logs = get_option(self::LOG_OPT, []);
         $logs = is_array($logs) ? $logs : [];
 
-        echo '<table class="widefat striped"><thead><tr><th>Time</th><th>Post</th><th>Step</th><th>HTTP</th><th>Message</th></tr></thead><tbody>';
+        echo '<h2>Логи</h2>';
+        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="margin:0 0 12px;">';
+        wp_nonce_field('krv_max_clear_logs');
+        echo '<input type="hidden" name="action" value="krv_max_clear_logs">';
+        submit_button('Очистить логи','secondary','submit',false,['onclick'=>"return confirm('Очистить все логи плагина?');"]);
+        echo '</form>';
+        echo '<table class="widefat striped"><thead><tr><th>Время</th><th>Пост</th><th>Шаг</th><th>HTTP</th><th>Сообщение</th></tr></thead><tbody>';
         if (!empty($logs)) {
             foreach ($logs as $row) {
                 $t = (int)($row['time'] ?? 0);
@@ -694,7 +823,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 echo '<td>'.esc_html((string)$pid).'</td>';
                 echo '<td>'.esc_html($step).'</td>';
                 echo '<td>'.esc_html($http).'</td>';
-                echo '<td title="'.esc_attr($msg).'" style="max-width:760px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'.esc_html($msg).'</td>';
+                echo '<td title="'.esc_attr($msg).'" style="max-width:760px;word-break:break-word;">'.esc_html($msg).'</td>';
                 echo '</tr>';
             }
         } else {
@@ -709,7 +838,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<h2 style="margin-top:0;">Как получить Token и Chat ID для MAX</h2>';
         echo '<ol style="line-height:1.6;">';
         echo '<li>Создайте чат-бота в MAX для партнёров (раздел <strong>Чат-бот и мини-приложение</strong>).</li>';
-        echo '<li>В разделе <strong>Интеграция</strong> получите токен и вставьте его в настройку <strong>Token</strong> плагина.</li>';
+        echo '<li>В разделе <strong>Интеграция</strong> получите токен. Безопаснее: <code>define(\'KRV_MAX_TOKEN\', \'...\');</code> в <code>wp-config.php</code>. В админке token хранится в БД — удобно, но менее безопасно при утечке бэкапа.</li>';
         echo '<li>Добавьте бота в нужную группу/канал в MAX, где будут публикации.</li>';
         echo '<li>Отправьте любое сообщение в эту группу (чтобы чат появился в списке API).</li>';
         echo '<li>Ниже нажмите кнопку поиска — плагин попробует показать доступные Chat ID.</li>';
@@ -771,16 +900,45 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         $disable = (int)get_post_meta($post->ID,self::META_DISABLE,true);
         $override = (string)get_post_meta($post->ID,self::META_OVERRIDE,true);
+        $status = (string)get_post_meta($post->ID, self::META_STATUS, true);
+        $err = (string)get_post_meta($post->ID, self::META_ERROR, true);
+        $targets = get_post_meta($post->ID, self::META_TARGET_RESULTS, true);
+        $targets_summary = '';
+        if (is_array($targets) && !empty($targets)) {
+            $bits = [];
+            foreach ($targets as $row) {
+                if (!is_array($row)) continue;
+                $bits[] = (string)($row['chat_id'] ?? '?') . ':' . (string)($row['status'] ?? '?');
+            }
+            $targets_summary = implode('; ', $bits);
+        }
+
+        $status_labels = [
+            'queued' => 'В очереди',
+            'sent' => 'Отправлено',
+            'error' => 'Ошибка',
+            'partial_success' => 'Частично',
+        ];
+        $status_label = $status_labels[$status] ?? ($status !== '' ? $status : '—');
+
+        echo '<p><strong>Статус MAX:</strong> '.esc_html($status_label).'</p>';
+        if ($targets_summary !== '') {
+            echo '<p class="description" style="margin-top:0;" title="'.esc_attr($targets_summary).'">Цели: '.esc_html(mb_strlen($targets_summary) > 120 ? mb_substr($targets_summary, 0, 120).'…' : $targets_summary).'</p>';
+        }
+        if ($err !== '') {
+            echo '<p class="description" style="color:#b32d2e;margin-top:0;" title="'.esc_attr($err).'">'.esc_html(mb_strlen($err) > 160 ? mb_substr($err, 0, 160).'…' : $err).'</p>';
+        }
 
         echo '<p><label><input type="checkbox" name="krv_max_disable" value="1" '.checked($disable,1,false).'> Не отправлять в MAX</label></p>';
-        echo '<p><strong>Override текст</strong>:</p>';
+        echo '<p><strong>Свой текст (override)</strong>:</p>';
         echo '<textarea name="krv_max_override" class="widefat" style="min-height:80px;">'.esc_textarea($override).'</textarea>';
 
-        $url = wp_nonce_url(
-            admin_url('admin-post.php?action=krv_max_send_now&post_id='.(int)$post->ID),
-            'krv_max_send_now_'.(int)$post->ID
-        );
-        echo '<p style="margin-top:10px;"><a class="button button-secondary" href="'.esc_url($url).'">Отправить сейчас</a></p>';
+        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="margin-top:10px;">';
+        wp_nonce_field('krv_max_send_now_'.(int)$post->ID);
+        echo '<input type="hidden" name="action" value="krv_max_send_now">';
+        echo '<input type="hidden" name="post_id" value="'.esc_attr((string)(int)$post->ID).'">';
+        echo '<button type="submit" class="button button-secondary">Отправить сейчас</button>';
+        echo '</form>';
     }
 
     public static function save_metabox(int $post_id, WP_Post $post): void {
@@ -843,7 +1001,25 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             wp_schedule_event(time() + 60, self::CRON_SCHEDULE, self::CRON_HOOK);
         }
 
-        wp_schedule_single_event(time() + 5, self::CRON_HOOK);
+        // Avoid piling up many single-events (was a source of burst sends after restart).
+        $next_single = wp_next_scheduled(self::CRON_HOOK);
+        $crons = _get_cron_array();
+        $has_near_single = false;
+        if (is_array($crons)) {
+            $now = time();
+            foreach ($crons as $ts => $hooks) {
+                if (!is_array($hooks) || !isset($hooks[self::CRON_HOOK])) {
+                    continue;
+                }
+                if ((int)$ts <= $now + 30) {
+                    $has_near_single = true;
+                    break;
+                }
+            }
+        }
+        if (!$has_near_single) {
+            wp_schedule_single_event(time() + 5, self::CRON_HOOK);
+        }
         self::spawn_cron();
     }
 
@@ -1036,19 +1212,39 @@ public static function handle_send_test(): void {
         (string)$test_content['plain_fallback']
     );
 
-    if ($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success') {
+    $worker_msg = '';
+    if (($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success')
+        && !empty($s['enable_worker_after_test'])) {
         update_option(self::WORKER_ENABLED_OPT, 1, false);
+        $worker_msg = ' Автоворкер включён (как выбрано в настройках).';
     }
 
     $notice_type = $dispatch['status'] === 'error'
         ? 'error'
         : ($dispatch['status'] === 'partial_success' ? 'warning' : 'success');
 
-    self::notice($notice_type, 'Тест: '.$dispatch['message']);
+    self::notice($notice_type, 'Тест: '.$dispatch['message'].$worker_msg);
 
     wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
     exit;
 }
+
+    public static function handle_clear_logs(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_clear_logs');
+        delete_option(self::LOG_OPT);
+        self::notice('success', 'Логи очищены.');
+        wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=logs'));
+        exit;
+    }
+
+    public static function handle_dismiss_upgrade_notice(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_dismiss_upgrade_notice');
+        delete_option(self::UPGRADE_NOTICE_OPT);
+        wp_safe_redirect(wp_get_referer() ?: admin_url('admin.php?page=krv-max-autopost'));
+        exit;
+    }
     public static function handle_run_queue(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
         check_admin_referer('krv_max_run_queue');
@@ -1081,16 +1277,25 @@ public static function handle_send_test(): void {
         check_admin_referer('krv_max_requeue_errors');
 
         $posts = get_posts([
-            'post_type'=>self::supported_post_types(),'post_status'=>'any','numberposts'=>-1,
-            'meta_key'=>self::META_STATUS,'meta_value'=>'error',
+            'post_type'=>self::supported_post_types(),
+            'post_status'=>'any',
+            'numberposts'=>self::REQUEUE_BATCH,
+            'fields'=>'ids',
+            'meta_key'=>self::META_STATUS,
+            'meta_value'=>'error',
+            'orderby'=>'ID',
+            'order'=>'DESC',
         ]);
 
-        foreach ($posts as $p) {
-            self::queue_post((int)$p->ID,'Requeue error');
+        foreach ($posts as $id) {
+            self::queue_post((int)$id,'Requeue error batch');
         }
 
-        self::trigger_queue_worker();
-        self::notice('success','Ошибочные посты переведены в очередь.');
+        $n = count($posts);
+        if ($n > 0) {
+            self::trigger_queue_worker();
+        }
+        self::notice('success','В очередь из ошибок: '.$n.' (пачка до '.self::REQUEUE_BATCH.'). Повторите для следующей пачки.');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
     }
@@ -1098,7 +1303,13 @@ public static function handle_send_test(): void {
     public static function handle_send_now(): void {
         if (!current_user_can('edit_posts')) wp_die('Forbidden');
 
-        $post_id = isset($_GET['post_id']) ? (int)$_GET['post_id'] : 0;
+        // Prefer POST; allow GET only with valid nonce (row actions / bookmarks).
+        $post_id = 0;
+        if (isset($_POST['post_id'])) {
+            $post_id = (int)$_POST['post_id'];
+        } elseif (isset($_GET['post_id'])) {
+            $post_id = (int)$_GET['post_id'];
+        }
         if (!$post_id) wp_die('Bad request');
         $post = get_post($post_id);
         if (!$post) wp_die('Bad request');
@@ -1138,7 +1349,12 @@ public static function handle_send_test(): void {
     public static function handle_queue_now(): void {
         if (!current_user_can('edit_posts')) wp_die('Forbidden');
 
-        $post_id = isset($_GET['post_id']) ? (int)$_GET['post_id'] : 0;
+        $post_id = 0;
+        if (isset($_POST['post_id'])) {
+            $post_id = (int)$_POST['post_id'];
+        } elseif (isset($_GET['post_id'])) {
+            $post_id = (int)$_GET['post_id'];
+        }
         if (!$post_id) wp_die('Bad request');
         $post = get_post($post_id);
         if (!$post) wp_die('Bad request');
@@ -1161,16 +1377,31 @@ public static function handle_send_test(): void {
         $posts = get_posts([
             'post_type'=>self::supported_post_types(),
             'post_status'=>'publish',
-            'numberposts'=>-1,
+            'numberposts'=>self::REQUEUE_BATCH,
             'fields'=>'ids',
+            'orderby'=>'ID',
+            'order'=>'DESC',
+            'meta_query' => [
+                'relation' => 'OR',
+                ['key' => self::META_STATUS, 'compare' => 'NOT EXISTS'],
+                ['key' => self::META_STATUS, 'value' => 'queued', 'compare' => '!='],
+            ],
         ]);
 
         foreach ($posts as $id) {
-            self::queue_post((int)$id,'Bulk queue all published');
+            self::queue_post((int)$id,'Bulk queue published batch');
         }
 
-        self::trigger_queue_worker();
-        self::notice('success','Все опубликованные материалы добавлены в очередь: '.count($posts));
+        $n = count($posts);
+        $targets_n = count(self::target_chat_ids(self::get_settings()));
+        if ($n > 0) {
+            self::trigger_queue_worker();
+        }
+        self::notice(
+            'success',
+            'В очередь добавлено: '.$n.' (пачка до '.self::REQUEUE_BATCH.'). Целей: '.$targets_n.
+            '. Ориентир до '.($n * max(1, $targets_n)).' сообщений. Повторите кнопку для следующей пачки.'
+        );
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
     }
@@ -1182,8 +1413,10 @@ public static function handle_send_test(): void {
         $posts = get_posts([
             'post_type'=>self::supported_post_types(),
             'post_status'=>'publish',
-            'numberposts'=>-1,
+            'numberposts'=>self::REQUEUE_BATCH,
             'fields'=>'ids',
+            'orderby'=>'ID',
+            'order'=>'DESC',
         ]);
 
         $requeued = 0;
@@ -1196,7 +1429,7 @@ public static function handle_send_test(): void {
                 continue;
             }
 
-            self::requeue_post_with_current_settings($post_id,'Requeue published with current settings');
+            self::requeue_post_with_current_settings($post_id,'Requeue published batch with current settings');
             $requeued++;
         }
 
@@ -1204,9 +1437,11 @@ public static function handle_send_test(): void {
             self::trigger_queue_worker();
         }
 
-        $message = 'Опубликованные материалы переочередены с текущими настройками: '.$requeued;
+        $targets_n = count(self::target_chat_ids(self::get_settings()));
+        $message = 'Переочередь (пачка): '.$requeued.' постов, целей: '.$targets_n.
+            ', ориентир до '.($requeued * max(1, $targets_n)).' сообщений. Повторите для следующей пачки.';
         if ($skipped_disabled > 0) {
-            $message .= '. Пропущено с отметкой "Не отправлять в MAX": '.$skipped_disabled;
+            $message .= ' Пропущено «Не отправлять»: '.$skipped_disabled.'.';
         }
 
         self::notice('success', $message);
@@ -1401,12 +1636,21 @@ public static function handle_send_test(): void {
 
         // step2
         $upload_url = (string)$j1['url'];
+        if (!self::is_allowed_upload_url($upload_url)) {
+            self::log('upload_step2', 0, $post_id, 'Rejected upload_url (SSRF guard): '.self::sanitize_upload_log_text($upload_url));
+            return false;
+        }
 
         $ch = curl_init($upload_url);
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, ['data'=>new CURLFile($file)]);
         curl_setopt($ch, CURLOPT_TIMEOUT, 60);
+        curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
+        curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
+        if (defined('CURLPROTO_HTTP')) {
+            // HTTPS only — do not allow http redirect targets.
+        }
 
         $out = curl_exec($ch);
         $code2 = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -1557,6 +1801,47 @@ public static function handle_send_test(): void {
             $path = '/' . ltrim($path, '/');
         }
         return self::api_base() . $path;
+    }
+
+    /**
+     * SSRF guard for MAX upload step2 URL returned by the API.
+     */
+    private static function is_allowed_upload_url(string $url): bool {
+        $url = trim($url);
+        if ($url === '' || !preg_match('#^https://#i', $url)) {
+            return false;
+        }
+
+        $host = strtolower((string)(wp_parse_url($url, PHP_URL_HOST) ?: ''));
+        if ($host === '') {
+            return false;
+        }
+
+        $allowed_suffixes = [
+            'max.ru',
+            'oneme.ru',
+            'okcdn.ru',
+            'mycdn.me',
+            'vkuserphoto.ru',
+            'userapi.com',
+        ];
+
+        $ok = false;
+        foreach ($allowed_suffixes as $suffix) {
+            if ($host === $suffix || str_ends_with($host, '.' . $suffix)) {
+                $ok = true;
+                break;
+            }
+        }
+
+        /**
+         * Filter allowed upload hosts check. Return true to allow.
+         *
+         * @param bool   $ok
+         * @param string $host
+         * @param string $url
+         */
+        return (bool)apply_filters('krv_max_allow_upload_url', $ok, $host, $url);
     }
 
     private static function api(array $payload, string $chat_id, string $token, int $post_id, bool $debug): array {
