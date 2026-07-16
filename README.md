@@ -1,9 +1,9 @@
-# MAX Autopost (Free) v1.11.2
+# MAX Autopost (Free) v1.11.3
 
 Плагин для автоматической отправки постов из WordPress в Max.
 
 ### Установка
-1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.2/max-autopost-1.11.2.zip)
+1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.3/max-autopost-1.11.3.zip)
 2. Установи через WordPress → Плагины → Добавить новый → Загрузить плагин
 
 ### Автообновление
@@ -18,6 +18,10 @@
 
 ---
 ⭐ MIT License • [GitHub](https://github.com/A-Krivoshen/max-autopost)
+
+## Что нового в 1.11.3
+- Fix: **подпись** с `<a href>` — отдельный блок `<br><br>`, ссылка остаётся кликабельной при жирном заголовке.
+- `clean_publish_text` — корректные `\r\n`.
 
 ## Что нового в 1.11.2
 - Fix: **жирный заголовок** — title и текст не сливаются; в HTML MAX только `<br>`/`<br><br>`.

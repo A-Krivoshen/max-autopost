@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.11.2
+ * Version: 1.11.3
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.2';
+    private const VERSION = '1.11.3';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -2032,10 +2032,12 @@ public static function handle_send_test(): void {
     /**
      * Build MAX HTML with bold title and guaranteed visual gap before body.
      * Always: <strong>Title</strong><br><br>BodyWithBr
+     * Does NOT include post_append_text — attach via append_html_block_for_max().
      */
     private static function compose_bold_title_html(string $title, string $body_plain): string {
         $title = self::clean_publish_text($title);
         $body_plain = ltrim(str_replace(["\r\n", "\r"], "\n", $body_plain), "\n");
+        $body_plain = rtrim($body_plain, "\n");
 
         $html = '<strong>' . esc_html($title) . '</strong>';
         if ($body_plain !== '') {
@@ -2046,10 +2048,96 @@ public static function handle_send_test(): void {
     }
 
     /**
+     * Prepare «Текст после записи» for MAX HTML.
+     * Keeps safe <a href> / <br>; does not esc_html the whole string (that would kill links).
+     */
+    private static function prepare_append_html_for_max(string $html): string {
+        $html = trim($html);
+        if ($html === '') {
+            return '';
+        }
+
+        // Defense in depth — already kses'd on save, re-apply whitelist.
+        $html = trim((string)wp_kses($html, self::append_allowed_html_tags()));
+        if ($html === '') {
+            return '';
+        }
+
+        // Normalize breaks; bare newlines (if any) become <br> so MAX shows spacing.
+        $html = preg_replace('/<\s*br\s*\/?\s*>/i', '<br>', $html);
+        $html = preg_replace("/\n+/u", '<br>', (string)$html);
+        $html = preg_replace('/(?:<br>){3,}/i', '<br><br>', (string)$html);
+
+        // Ensure links are safe absolute http(s) only; keep label text safe.
+        $html = preg_replace_callback('/<a\b([^>]*)>(.*?)<\/a>/is', static function ($m) {
+            $attrs = (string)($m[1] ?? '');
+            // Allow only text + <br> inside the link label.
+            $inner = (string)wp_kses((string)($m[2] ?? ''), ['br' => []]);
+            $inner = preg_replace('/<\s*br\s*\/?\s*>/i', '<br>', (string)$inner);
+            $url = '';
+            if (preg_match('/\bhref\s*=\s*(["\'])(.*?)\1/i', $attrs, $hm)) {
+                $url = (string)$hm[2];
+            } elseif (preg_match('/\bhref\s*=\s*([^\s>]+)/i', $attrs, $hm)) {
+                $url = (string)$hm[1];
+            }
+            $url = esc_url(html_entity_decode($url, ENT_QUOTES | ENT_HTML5, 'UTF-8'), ['http', 'https']);
+            if ($url === '') {
+                return $inner;
+            }
+            return '<a href="' . esc_attr($url) . '">' . $inner . '</a>';
+        }, $html);
+
+        return trim((string)$html);
+    }
+
+    /**
+     * Append signature block with a guaranteed gap before it.
+     */
+    private static function append_html_block_for_max(string $html, string $append_html): string {
+        $append_html = self::prepare_append_html_for_max($append_html);
+        if ($append_html === '') {
+            return $html;
+        }
+        if ($html === '') {
+            return $append_html;
+        }
+        return rtrim($html) . '<br><br>' . $append_html;
+    }
+
+    /**
+     * Strip trailing plain append (from append_plain_tail_preserving_end) off a plain message body.
+     */
+    private static function strip_trailing_append_plain(string $plain_body, string $append_plain): string {
+        $plain_body = str_replace(["\r\n", "\r"], "\n", $plain_body);
+        $plain_body = self::clean_publish_text($plain_body);
+        $append_plain = self::clean_publish_text($append_plain);
+        if ($append_plain === '' || $plain_body === '') {
+            return rtrim($plain_body, "\n");
+        }
+
+        // Try several join styles used by append_plain_tail_preserving_end / clean_publish_text.
+        $candidates = [
+            "\n\n" . $append_plain,
+            "\n" . $append_plain,
+            $append_plain,
+        ];
+        foreach ($candidates as $suffix) {
+            $body_len = mb_strlen($plain_body, 'UTF-8');
+            $suf_len = mb_strlen($suffix, 'UTF-8');
+            if ($suf_len <= $body_len && mb_substr($plain_body, $body_len - $suf_len, null, 'UTF-8') === $suffix) {
+                return rtrim(mb_substr($plain_body, 0, $body_len - $suf_len, 'UTF-8'), "\n");
+            }
+        }
+
+        return rtrim($plain_body, "\n");
+    }
+
+    /**
      * When bold_title is on, convert a finished plain message into MAX HTML with:
      * - <strong>title</strong>
-     * - <br><br> before the rest
+     * - <br><br> before body
      * - body newlines as <br>/<br><br>
+     * - «Текст после записи» as a separate HTML block (keeps <a href>, not esc_html'd)
      *
      * Returns null when bold is off, title empty, or plain text is an override
      * that does not start with the post title (keep as plain).
@@ -2066,21 +2154,30 @@ public static function handle_send_test(): void {
 
         $plain_text = str_replace(["\r\n", "\r"], "\n", (string)$plain_text);
         $plain_text = self::clean_publish_text($plain_text);
+        $append = self::get_append_text_variants($settings);
 
-        // Title-only (or title + nothing after limits).
+        // Title-only (no body, maybe only append was added in plain form).
         if ($plain_text === $title) {
-            return self::compose_bold_title_html($title, '');
+            return self::append_html_block_for_max(
+                self::compose_bold_title_html($title, ''),
+                (string)$append['html']
+            );
         }
 
         $title_len = mb_strlen($title, 'UTF-8');
 
-        // Preferred compose from build_*: "Title\n\nBody..."
+        // Preferred compose from build_*: "Title\n\nBody...\n\nAppendPlain"
         if (mb_substr($plain_text, 0, $title_len, 'UTF-8') === $title) {
             $rest = mb_substr($plain_text, $title_len, null, 'UTF-8');
-            // Drop any leading blank lines after the title so we control spacing via <br><br> only.
             $rest = preg_replace('/^\n+/u', '', (string)$rest);
             $rest = (string)$rest;
-            return self::compose_bold_title_html($title, $rest);
+
+            // Remove plain-converted append from the tail so we can re-attach real HTML links.
+            $body_only = self::strip_trailing_append_plain($rest, (string)$append['plain']);
+
+            $html = self::compose_bold_title_html($title, $body_only);
+            $html = self::append_html_block_for_max($html, (string)$append['html']);
+            return $html;
         }
 
         // Override / custom text that does not begin with the post title — do not force bold HTML.
@@ -2226,17 +2323,16 @@ private static function has_media_payload_markers($payload): bool {
     }
 
     private static function clean_publish_text(string $text): string {
-        $text = str_replace(["
-", "
-"], "
-", $text);
+        // Normalize newlines explicitly (\r\n / \r → \n). Keep blank lines (\n\n).
+        $text = str_replace(["\r\n", "\r"], "\n", $text);
         $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $text = str_replace([" ", " ", " "], ' ', $text);
+        // nbsp and similar → regular space
+        $text = str_replace(["\xC2\xA0", "\xE2\x80\x87", "\xE2\x80\xAF", ' '], ' ', $text);
         $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+/u', '', $text);
-        $text = preg_replace('/[ 	]+/u', ' ', $text);
-        $text = preg_replace('/ *
- */u', "
-", $text);
+        // Collapse horizontal whitespace only (do not touch newlines).
+        $text = preg_replace('/[ \t]+/u', ' ', $text);
+        // Trim spaces around each newline without removing blank lines.
+        $text = preg_replace('/ *\n */u', "\n", $text);
         return trim((string)$text);
     }
 
@@ -2308,9 +2404,7 @@ private static function build_test_content(array $settings): array {
             ? '<strong>MAX Autopost: тест форматирования</strong>'
             : 'MAX Autopost: тест форматирования';
         $formatted = $title_html."<br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>".$html_tail;
-        if ($append['html'] !== '') {
-            $formatted .= '<br><br>' . $append['html'];
-        }
+        $formatted = self::append_html_block_for_max($formatted, (string)$append['html']);
         $plain = "MAX Autopost: тест форматирования\n\nКурсивный текст\nСсылка: ".$url."\n\n• Элемент списка 1\n• Элемент списка 2\n\ncode_example()".$plain_tail;
         $plain = self::append_plain_tail_preserving_end($plain, (string)$append['plain'], $settings);
 
@@ -2327,9 +2421,13 @@ private static function build_test_content(array $settings): array {
         $title = 'MAX Autopost: тест (только заголовок)';
         $plain = self::append_plain_tail_preserving_end($title . $plain_tail, (string)$append['plain'], $settings);
         if (self::is_bold_title_enabled($settings)) {
+            $html = self::append_html_block_for_max(
+                '<strong>'.esc_html($title).'</strong>'.$html_tail,
+                (string)$append['html']
+            );
             return [
                 'mode' => 'title_only',
-                'text' => '<strong>'.esc_html($title).'</strong>'.$html_tail.($append['html'] !== '' ? '<br><br>'.$append['html'] : ''),
+                'text' => $html,
                 'parse_mode' => 'HTML',
                 'format' => 'html',
                 'plain_fallback' => $plain,
@@ -2345,10 +2443,10 @@ private static function build_test_content(array $settings): array {
 
     $plain = self::append_plain_tail_preserving_end("MAX Autopost: тест\n\n".$url.$plain_tail, (string)$append['plain'], $settings);
     if (self::is_bold_title_enabled($settings)) {
-        $html = '<strong>MAX Autopost: тест</strong><br><br>'.esc_html($url).$html_tail;
-        if ($append['html'] !== '') {
-            $html .= '<br><br>' . $append['html'];
-        }
+        $html = self::append_html_block_for_max(
+            '<strong>MAX Autopost: тест</strong><br><br>'.esc_html($url).$html_tail,
+            (string)$append['html']
+        );
         return [
             'mode' => $mode,
             'text' => $html,
@@ -2418,10 +2516,8 @@ private static function build_test_content(array $settings): array {
         $with_fields = self::append_custom_fields_formatted($composed, $post_id, $settings);
         $append = self::get_append_text_variants($settings);
         $base_html = $with_fields;
-        if ($append['html'] !== '') {
-            // Append block also separated by <br><br> for MAX readability.
-            $with_fields .= '<br><br>' . $append['html'];
-        }
+        // Signature as separate HTML block (keeps <a href>, gap via <br><br>).
+        $with_fields = self::append_html_block_for_max($with_fields, (string)$append['html']);
 
         $user_max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
         $budget = self::is_append_in_limit_enabled($settings) ? $user_max : self::MAX_TEXT;
@@ -2464,6 +2560,7 @@ private static function build_test_content(array $settings): array {
             return '';
         }
 
+        // Links → "label\nurl" so plain/fallback still shows both without merging into one word.
         $html = preg_replace_callback('/<a\b([^>]*)>(.*?)<\/a>/is', static function($m) {
             $attrs = (string)($m[1] ?? '');
             $label = self::clean_publish_text(wp_strip_all_tags(str_replace(['<br>', '<br/>', '<br />'], "\n", (string)($m[2] ?? ''))));
@@ -2483,7 +2580,8 @@ private static function build_test_content(array $settings): array {
                 return $url;
             }
 
-            return $label . "\n" . $url;
+            // Separate label and URL with a blank line in plain mode for readability.
+            return $label . "\n\n" . $url;
         }, $html);
 
         $html = str_replace(['<br>', '<br/>', '<br />'], "\n", (string)$html);

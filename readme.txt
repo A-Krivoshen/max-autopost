@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.11.2
+Stable tag: 1.11.3
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.11.3 =
+* Fix: подпись (`post_append_text`) с `<a href>` — отдельный блок и кликабельная ссылка при bold_title.
+* clean_publish_text: корректная нормализация переносов.
+
 = 1.11.2 =
 * Fix: жирный заголовок — нормальный отступ `<br><br>` и переносы body в HTML-режиме MAX.
 * Надёжный разбор title/body; `<p>` нормализуется в br для formatted.

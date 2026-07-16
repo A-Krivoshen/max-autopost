@@ -1,4 +1,9 @@
 # Changelog
+## 1.11.3
+- Fix: «Текст после записи» / подпись с `<a href>` больше не сливается и не теряет ссылку при жирном заголовке.
+- Подпись в HTML-режиме цепляется отдельным блоком `<br><br>` + реальный `<a href>` (не через esc_html plain).
+- `prepare_append_html_for_max` / `append_html_block_for_max` / strip plain-append с хвоста.
+- Исправлен `clean_publish_text` (нормализация `\r\n`).
 ## 1.11.2
 - Fix: при «Жирный заголовок» заголовок и текст больше не сливаются в одну строку.
 - HTML для MAX: разделитель title/body всегда `<br><br>`; body `\n` → `<br>` / `\n\n` → `<br><br>`.
