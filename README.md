@@ -19,6 +19,10 @@
 ---
 ⭐ MIT License • [GitHub](https://github.com/A-Krivoshen/max-autopost)
 
+## Что нового в 1.11.2
+- Fix: **жирный заголовок** — title и текст не сливаются; в HTML MAX только `<br>`/`<br><br>`.
+- Надёжный title/body split; formatted `<p>` → br.
+
 ## Что нового в 1.11.1
 - Security/UX hardening: SSRF guard, settings capability, token warning → `wp-config.php`.
 - Тест не включает автоворкер без галочки; multi-chat counter; bulk по 50 + confirm.

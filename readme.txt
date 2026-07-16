@@ -31,6 +31,10 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.11.2 =
+* Fix: жирный заголовок — нормальный отступ `<br><br>` и переносы body в HTML-режиме MAX.
+* Надёжный разбор title/body; `<p>` нормализуется в br для formatted.
+
 = 1.11.1 =
 * Security/UX: SSRF guard upload_url, capability settings, token empty=keep + warning (wp-config safer).
 * Тест не включает воркер по умолчанию; multi-chat counter; bulk пачками 50 + confirm.
