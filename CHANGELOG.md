@@ -1,4 +1,9 @@
 # Changelog
+## 1.11.2
+- Fix: при «Жирный заголовок» заголовок и текст больше не сливаются в одну строку.
+- HTML для MAX: разделитель title/body всегда `<br><br>`; body `\n` → `<br>` / `\n\n` → `<br><br>`.
+- `maybe_bold_title_html` переписан (mb-safe отрезание title); `plain_text_to_max_html` + `max_html_normalize_blocks` (`<p>` → br).
+- plain_text / excerpt / title_only / formatted: отступ сохраняется; plain_fallback без изменений.
 ## 1.11.1
 - Security/UX hardening после аудита.
 - Token: пустое поле = не менять; предупреждение что ключ в БД менее безопасен → `wp-config.php` `KRV_MAX_TOKEN`.

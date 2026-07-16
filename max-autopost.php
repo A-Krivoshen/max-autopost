@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.11.1
+ * Version: 1.11.2
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.1';
+    private const VERSION = '1.11.2';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -2002,8 +2002,57 @@ public static function handle_send_test(): void {
     }
 
     /**
-     * Wrap post title in <strong> for MAX HTML format, keep body as escaped plain text.
-     * Returns null when title is empty, disabled, or text does not start with the title (override).
+     * Convert plain text to MAX-safe HTML line breaks.
+     * MAX HTML mode often ignores raw \n / \n\n — use explicit <br> / <br><br>.
+     */
+    private static function plain_text_to_max_html(string $text): string {
+        $text = str_replace(["\r\n", "\r"], "\n", $text);
+        // Escape first so user content cannot inject tags.
+        $text = esc_html($text);
+        // Paragraph breaks first, then single line breaks.
+        $text = preg_replace("/\n{2,}/u", '<br><br>', $text);
+        $text = str_replace("\n", '<br>', (string)$text);
+        return $text;
+    }
+
+    /**
+     * MAX HTML often ignores <p>; convert block paragraphs to <br><br> for readable spacing.
+     */
+    private static function max_html_normalize_blocks(string $html): string {
+        $html = preg_replace('/<\s*br\s*\/?\s*>/i', '<br>', $html);
+        // </p><p> → visual paragraph
+        $html = preg_replace('/<\/\s*p\s*>\s*<\s*p(?:\s[^>]*)?>/i', '<br><br>', (string)$html);
+        // Remaining open/close p
+        $html = preg_replace('/<\s*\/?\s*p(?:\s[^>]*)?>/i', '', (string)$html);
+        // Collapse accidental 3+ breaks
+        $html = preg_replace('/(?:<br>){3,}/i', '<br><br>', (string)$html);
+        return trim((string)$html);
+    }
+
+    /**
+     * Build MAX HTML with bold title and guaranteed visual gap before body.
+     * Always: <strong>Title</strong><br><br>BodyWithBr
+     */
+    private static function compose_bold_title_html(string $title, string $body_plain): string {
+        $title = self::clean_publish_text($title);
+        $body_plain = ltrim(str_replace(["\r\n", "\r"], "\n", $body_plain), "\n");
+
+        $html = '<strong>' . esc_html($title) . '</strong>';
+        if ($body_plain !== '') {
+            // Strict visual separator for MAX HTML mode.
+            $html .= '<br><br>' . self::plain_text_to_max_html($body_plain);
+        }
+        return $html;
+    }
+
+    /**
+     * When bold_title is on, convert a finished plain message into MAX HTML with:
+     * - <strong>title</strong>
+     * - <br><br> before the rest
+     * - body newlines as <br>/<br><br>
+     *
+     * Returns null when bold is off, title empty, or plain text is an override
+     * that does not start with the post title (keep as plain).
      */
     private static function maybe_bold_title_html(string $plain_text, int $post_id, array $settings): ?string {
         if (!self::is_bold_title_enabled($settings)) {
@@ -2015,33 +2064,26 @@ public static function handle_send_test(): void {
             return null;
         }
 
-        $plain_text = (string)$plain_text;
+        $plain_text = str_replace(["\r\n", "\r"], "\n", (string)$plain_text);
+        $plain_text = self::clean_publish_text($plain_text);
+
+        // Title-only (or title + nothing after limits).
         if ($plain_text === $title) {
-            return '<strong>' . esc_html($title) . '</strong>';
+            return self::compose_bold_title_html($title, '');
         }
 
-        // Standard compose: "Title\n\nBody..."
-        $prefix = $title . "\n\n";
-        if (strpos($plain_text, $prefix) === 0) {
-            $rest = substr($plain_text, strlen($prefix));
-            $html = '<strong>' . esc_html($title) . '</strong>';
-            if ($rest !== '') {
-                $html .= '<br><br>' . nl2br(esc_html($rest), false);
-            }
-            return $html;
+        $title_len = mb_strlen($title, 'UTF-8');
+
+        // Preferred compose from build_*: "Title\n\nBody..."
+        if (mb_substr($plain_text, 0, $title_len, 'UTF-8') === $title) {
+            $rest = mb_substr($plain_text, $title_len, null, 'UTF-8');
+            // Drop any leading blank lines after the title so we control spacing via <br><br> only.
+            $rest = preg_replace('/^\n+/u', '', (string)$rest);
+            $rest = (string)$rest;
+            return self::compose_bold_title_html($title, $rest);
         }
 
-        // Title only as first line
-        $prefix_line = $title . "\n";
-        if (strpos($plain_text, $prefix_line) === 0) {
-            $rest = ltrim(substr($plain_text, strlen($prefix_line)), "\n");
-            $html = '<strong>' . esc_html($title) . '</strong>';
-            if ($rest !== '') {
-                $html .= '<br><br>' . nl2br(esc_html($rest), false);
-            }
-            return $html;
-        }
-
+        // Override / custom text that does not begin with the post title — do not force bold HTML.
         return null;
     }
 
@@ -2228,9 +2270,13 @@ private static function has_media_payload_markers($payload): bool {
     }
 
     /**
+     * Final envelope for plain-like modes (plain_text / excerpt_plain / title_only).
+     * When bold_title is enabled, always send HTML (format=html) with <br><br> after the title.
+     *
      * @return array{mode:string,text:string,parse_mode:string,format?:string,plain_fallback:string}
      */
     private static function wrap_plain_message_result(string $mode, string $plain, int $post_id, array $settings): array {
+        // bold_title → MAX HTML so title stays bold and line breaks remain visible.
         $bold_html = self::maybe_bold_title_html($plain, $post_id, $settings);
         if ($bold_html !== null) {
             return [
@@ -2238,7 +2284,7 @@ private static function has_media_payload_markers($payload): bool {
                 'text' => $bold_html,
                 'parse_mode' => 'HTML',
                 'format' => 'html',
-                'plain_fallback' => $plain,
+                'plain_fallback' => $plain, // keep original plain for API fallback
             ];
         }
         return [
@@ -2353,12 +2399,18 @@ private static function build_test_content(array $settings): array {
         $source = $override !== '' ? $override : (string)get_post_field('post_content', $post_id);
         $source = str_replace(["\r\n", "\r"], "\n", $source);
         $normalized = self::normalize_wp_html_for_max($source);
-        $title = esc_html(self::clean_publish_text((string)get_the_title($post_id)));
+        // MAX HTML: prefer <br> spacing over <p> (often ignored by the client).
+        $normalized = self::max_html_normalize_blocks($normalized);
+        $title_plain = self::clean_publish_text((string)get_the_title($post_id));
+        $title = esc_html($title_plain);
         $body = trim($normalized);
 
-        $composed = self::is_bold_title_enabled($settings)
-            ? ('<strong>' . $title . '</strong>')
-            : $title;
+        // Title + strict visual gap before body (same rule as bold plain path).
+        if (self::is_bold_title_enabled($settings)) {
+            $composed = '<strong>' . $title . '</strong>';
+        } else {
+            $composed = $title;
+        }
         if ($body !== '') {
             $composed .= '<br><br>' . $body;
         }
@@ -2367,6 +2419,7 @@ private static function build_test_content(array $settings): array {
         $append = self::get_append_text_variants($settings);
         $base_html = $with_fields;
         if ($append['html'] !== '') {
+            // Append block also separated by <br><br> for MAX readability.
             $with_fields .= '<br><br>' . $append['html'];
         }
 
