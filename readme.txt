@@ -4,11 +4,11 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.10.10
+Stable tag: 1.11.0
 License: MIT
 License URI: https://opensource.org/license/mit/
 
-Автопостинг из WordPress в MAX (platform-api.max.ru): отправка в канал/группу и сразу в несколько chat_id, одно сообщение (картинка + текст + кнопка), очередь WP-Cron, retry, логи, обновления из GitHub Releases.
+Автопостинг из WordPress в MAX (platform-api2.max.ru): отправка в канал/группу и сразу в несколько chat_id, одно сообщение (картинка + текст + кнопка), очередь WP-Cron, retry, логи, обновления из GitHub Releases.
 
 == Description ==
 
@@ -31,6 +31,24 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.11.0 =
+* API: `platform-api2.max.ru` (миграция до 19.07.2026).
+* Галочка «Учитывать Текст после записи в общем лимите» (`append_in_limit`).
+* Справка в настройках: длина подписи / бюджет основного / итого.
+* Режим «только заголовок» (`title_only`).
+* Жирный заголовок + title_only; фильтр `krv_max_api_host`; заметка про сертификат Минцифры.
+
+= 1.10.12 =
+* Миграция API: `platform-api.max.ru` → `platform-api2.max.ru` (требование MAX до 19.07.2026).
+* Фильтр `krv_max_api_host` для переопределения базового URL API.
+* В справке: сертификат Минцифры нужен на сервере/хостинге WordPress, не на ПК пользователя.
+
+= 1.10.11 =
+* Добавлена настройка «Выделять заголовок поста жирным» (`bold_title`, по умолчанию включена).
+* В `plain_text` / `excerpt_plain` заголовок уходит жирным через безопасный HTML (`format=html`).
+* В `formatted` жирный заголовок можно отключить той же галочкой.
+* Fallback на plain text расширен на лёгкий HTML (bold title).
+
 = 1.10.9 =
 * Исправлено: `post_append_text` теперь сохраняется в конце plain/excerpt-сообщений даже при ограничении длины текста.
 

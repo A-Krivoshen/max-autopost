@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MAX Autopost (Free)
- * Description: Автопостинг из WordPress в MAX (platform-api.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.10.10
+ * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
+ * Version: 1.11.0
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,8 +20,10 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.10.10';
+    private const VERSION = '1.11.0';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
+    /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
+    private const API_HOST = 'https://platform-api2.max.ru';
 
     private const META_STATUS   = '_krv_max_status';   // queued|sent|partial_success|error
     private const META_ERROR    = '_krv_max_error';
@@ -193,6 +195,8 @@ final class KRV_MAX_Autopost {
             'subscribe_button_url'  => '',
             'max_text_limit' => self::MAX_TEXT,
             'message_format' => 'plain_text',
+            'bold_title' => 1,
+            'append_in_limit' => 1,
             'post_append_text' => '',
             'publish_custom_fields' => 0,
             'enabled_post_types'    => ['post'],
@@ -243,6 +247,8 @@ final class KRV_MAX_Autopost {
         $out['max_text_limit'] = self::normalize_text_limit($text_limit);
         $format = isset($in['message_format']) ? sanitize_key((string)$in['message_format']) : (string)$d['message_format'];
         $out['message_format'] = self::normalize_message_format($format);
+        $out['bold_title'] = !empty($in['bold_title']) ? 1 : 0;
+        $out['append_in_limit'] = !empty($in['append_in_limit']) ? 1 : 0;
         $append_raw = isset($in['post_append_text']) ? (string)$in['post_append_text'] : $d['post_append_text'];
         $out['post_append_text'] = trim((string)wp_kses($append_raw, self::append_allowed_html_tags()));
 
@@ -426,9 +432,26 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
         echo '<p class="description">Отдельная дополнительная кнопка. Не связана с <code>post_append_text</code>.</p>';
         echo '</td></tr>';
 
+        $append_preview = self::get_append_text_variants($s);
+        $append_len = mb_strlen((string)$append_preview['plain'], 'UTF-8');
+        $limit_ui = self::normalize_text_limit((int)$s['max_text_limit']);
+        $append_in_limit_ui = !empty($s['append_in_limit']);
+        $sep = ($append_len > 0) ? 2 : 0;
+        $main_budget_ui = $append_in_limit_ui
+            ? max(0, $limit_ui - $append_len - $sep)
+            : $limit_ui;
+
         echo '<tr><th>Длина текста</th><td>';
         echo '<input type="number" min="'.esc_attr((string)self::MIN_TEXT).'" max="'.esc_attr((string)self::MAX_TEXT).'" step="1" name="'.esc_attr(self::OPT).'[max_text_limit]" value="'.esc_attr((string)(int)$s['max_text_limit']).'" style="width:130px;">';
-        echo '<p class="description">Максимальная длина текста для MAX: от '.esc_html((string)self::MIN_TEXT).' до '.esc_html((string)self::MAX_TEXT).' символов.</p>';
+        echo '<p class="description">Лимит для MAX: от '.esc_html((string)self::MIN_TEXT).' до '.esc_html((string)self::MAX_TEXT).' символов (plain-длина без HTML-тегов).</p>';
+        if ($append_len > 0) {
+            if ($append_in_limit_ui) {
+                echo '<p class="description"><strong>Справка:</strong> подпись ≈ <code>'.esc_html((string)$append_len).'</code>, основной текст ≤ <code>'.esc_html((string)$main_budget_ui).'</code>, <strong>итого ≤ '.esc_html((string)$limit_ui).'</strong>.</p>';
+            } else {
+                $est = min(self::MAX_TEXT, $limit_ui + $sep + $append_len);
+                echo '<p class="description"><strong>Справка:</strong> основной ≤ <code>'.esc_html((string)$limit_ui).'</code> + подпись ≈ <code>'.esc_html((string)$append_len).'</code> → ориентир <code>'.esc_html((string)$est).'</code> (потолок API '.esc_html((string)self::MAX_TEXT).').</p>';
+            }
+        }
         echo '</td></tr>';
 
         echo '<tr><th>Формат сообщения</th><td>';
@@ -436,13 +459,18 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
         echo '<option value="plain_text" '.selected((string)$s['message_format'], 'plain_text', false).'>plain text</option>';
         echo '<option value="formatted" '.selected((string)$s['message_format'], 'formatted', false).'>formatted</option>';
         echo '<option value="excerpt_plain" '.selected((string)$s['message_format'], 'excerpt_plain', false).'>excerpt plain</option>';
+        echo '<option value="title_only" '.selected((string)$s['message_format'], 'title_only', false).'>только заголовок</option>';
         echo '</select>';
-        echo '<p class="description">plain text — максимально совместимый режим; formatted — сохраняет базовое форматирование; excerpt plain — безопасный короткий анонс без HTML.</p>';
+        echo '<p class="description">plain text — совместимый режим; formatted — HTML; excerpt plain — короткий анонс; <strong>только заголовок</strong> — title + картинка + подпись + кнопки (без текста записи).</p>';
+        echo '<label style="display:block;margin-top:8px;"><input type="checkbox" name="'.esc_attr(self::OPT).'[bold_title]" value="1" '.checked((int)($s['bold_title'] ?? 1), 1, false).'> Выделять заголовок поста <strong>жирным</strong></label>';
+        echo '<p class="description">В formatted/plain/excerpt/title_only при включённой галочке заголовок уходит как <code>&lt;strong&gt;</code> (format=html).</p>';
         echo '</td></tr>';
 
         echo '<tr><th>Текст после записи</th><td>';
         echo '<textarea name="'.esc_attr(self::OPT).'[post_append_text]" class="large-text code" rows="4" placeholder="<a href=&quot;https://max.ru/...&quot;>Подписаться на канал</a>">'.esc_textarea((string)$s['post_append_text']).'</textarea>';
-        echo '<p class="description">Дополнительный текст в конце сообщения. В режиме formatted поддерживаются безопасные HTML-теги: <code>a</code>, <code>br</code>. В plain/excerpt HTML снимается, а ссылки выводятся как текст + URL.</p>';
+        echo '<p class="description">Дополнительный текст в конце. В formatted: whitelist <code>a</code>, <code>br</code>. В plain/excerpt — plain (ссылки как текст + URL).</p>';
+        echo '<label style="display:block;margin-top:8px;"><input type="checkbox" name="'.esc_attr(self::OPT).'[append_in_limit]" value="1" '.checked((int)($s['append_in_limit'] ?? 1), 1, false).'> Учитывать «Текст после записи» в общем лимите сообщения</label>';
+        echo '<p class="description"><strong>Вкл:</strong> «Длина текста» = лимит всего сообщения; основной анонс ужимается под подпись. <strong>Выкл:</strong> лимит только на основной текст, подпись добавляется сверху (итог может быть больше, жёсткий потолок '.esc_html((string)self::MAX_TEXT).').</p>';
         echo '</td></tr>';
 
         $post_types = self::available_post_types();
@@ -689,6 +717,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<p><strong>Теперь плагин поддерживает отправку:</strong> в канал, в группу/групповой чат и одновременно в несколько каналов/групп.</p>';
         echo '<p><strong>Формат дополнительных Chat ID:</strong> по одному значению на строку (например: <code>123456</code>, <code>-100987654</code>, <code>chat_abcd123</code>).</p>';
         echo '<p><strong>Важно:</strong> если список пуст, проверьте права бота в группе и отправьте тестовое сообщение в чат ещё раз.</p>';
+
+        echo '<h3>API MAX (с 19 июля 2026)</h3>';
+        echo '<p>Плагин обращается к <code>'.esc_html(self::api_base()).'</code> (миграция с <code>platform-api.max.ru</code>).</p>';
+        echo '<p>По требованиям MAX на стороне <strong>сервера WordPress</strong> (хостинг) в доверенные корневые сертификаты должен быть установлен <strong>сертификат Минцифры</strong>. Пользователю сайта обычно ничего ставить на ПК не нужно — это задача хостинга/администратора сервера. Инструкция: <a href="https://www.gosuslugi.ru/crt" target="_blank" rel="noopener noreferrer">gosuslugi.ru/crt</a>.</p>';
+        echo '<p>Если после обновления тест падает с ошибкой SSL/certificate — напишите в поддержку хостинга: «нужно добавить корневые сертификаты Минцифры (НЦУЦ) в системное хранилище CA».</p>';
 
         $token = self::token($s);
         if ($token === '') {
@@ -1338,7 +1371,7 @@ public static function handle_send_test(): void {
         }
 
         // step1
-        $r1 = wp_remote_post('https://platform-api.max.ru/uploads?type=image', [
+        $r1 = wp_remote_post(self::api_url('/uploads?type=image'), [
             'headers'=>[
                 'Authorization'=>$token,
                 'Content-Type'=>'application/json',
@@ -1405,8 +1438,8 @@ public static function handle_send_test(): void {
 
     private static function discover_chats(string $token): array {
         $endpoints = [
-            'https://platform-api.max.ru/chats?limit=50',
-            'https://platform-api.max.ru/chats',
+            self::api_url('/chats?limit=50'),
+            self::api_url('/chats'),
         ];
 
         $last_error = '';
@@ -1507,8 +1540,27 @@ public static function handle_send_test(): void {
         return $out;
     }
 
+    /**
+     * Base URL for MAX platform API. Filter: krv_max_api_host
+     */
+    private static function api_base(): string {
+        $base = (string)apply_filters('krv_max_api_host', self::API_HOST);
+        $base = rtrim(trim($base), '/');
+        if ($base === '' || !preg_match('#^https?://#i', $base)) {
+            $base = self::API_HOST;
+        }
+        return $base;
+    }
+
+    private static function api_url(string $path): string {
+        if ($path === '' || $path[0] !== '/') {
+            $path = '/' . ltrim($path, '/');
+        }
+        return self::api_base() . $path;
+    }
+
     private static function api(array $payload, string $chat_id, string $token, int $post_id, bool $debug): array {
-        $url = 'https://platform-api.max.ru/messages?chat_id=' . rawurlencode($chat_id);
+        $url = self::api_url('/messages?chat_id=' . rawurlencode($chat_id));
 
         $r = wp_remote_post($url, [
             'headers'=>[
@@ -1554,7 +1606,12 @@ public static function handle_send_test(): void {
     $primary['parse_mode'] = (string)($payload['parse_mode'] ?? '');
     $primary['format'] = (string)($payload['format'] ?? '');
 
-    if (!empty($primary['ok']) || $format_mode !== 'formatted') {
+    // Fallback for full formatted mode and for light HTML (e.g. bold title in plain/excerpt).
+    $used_html = ($format_mode === 'formatted')
+        || ((string)($payload['format'] ?? '') !== '')
+        || ((string)($payload['parse_mode'] ?? '') !== '');
+
+    if (!empty($primary['ok']) || !$used_html) {
         return $primary;
     }
 
@@ -1567,7 +1624,7 @@ public static function handle_send_test(): void {
         'fallback',
         (int)($primary['http'] ?? 0),
         $post_id,
-        '[chat_id='.self::mask_chat_id_for_log($chat_id).'] formatted failed, fallback to plain text without attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
+        '[chat_id='.self::mask_chat_id_for_log($chat_id).'] html/formatted failed, fallback to plain text without attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
     );
 
     $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
@@ -1648,7 +1705,59 @@ public static function handle_send_test(): void {
     }
 
     private static function normalize_message_format(string $mode): string {
-        return in_array($mode, ['plain_text', 'formatted', 'excerpt_plain'], true) ? $mode : 'plain_text';
+        return in_array($mode, ['plain_text', 'formatted', 'excerpt_plain', 'title_only'], true) ? $mode : 'plain_text';
+    }
+
+    private static function is_bold_title_enabled(array $settings): bool {
+        return !empty($settings['bold_title']);
+    }
+
+    private static function is_append_in_limit_enabled(array $settings): bool {
+        return !empty($settings['append_in_limit']);
+    }
+
+    /**
+     * Wrap post title in <strong> for MAX HTML format, keep body as escaped plain text.
+     * Returns null when title is empty, disabled, or text does not start with the title (override).
+     */
+    private static function maybe_bold_title_html(string $plain_text, int $post_id, array $settings): ?string {
+        if (!self::is_bold_title_enabled($settings)) {
+            return null;
+        }
+
+        $title = self::clean_publish_text((string)get_the_title($post_id));
+        if ($title === '') {
+            return null;
+        }
+
+        $plain_text = (string)$plain_text;
+        if ($plain_text === $title) {
+            return '<strong>' . esc_html($title) . '</strong>';
+        }
+
+        // Standard compose: "Title\n\nBody..."
+        $prefix = $title . "\n\n";
+        if (strpos($plain_text, $prefix) === 0) {
+            $rest = substr($plain_text, strlen($prefix));
+            $html = '<strong>' . esc_html($title) . '</strong>';
+            if ($rest !== '') {
+                $html .= '<br><br>' . nl2br(esc_html($rest), false);
+            }
+            return $html;
+        }
+
+        // Title only as first line
+        $prefix_line = $title . "\n";
+        if (strpos($plain_text, $prefix_line) === 0) {
+            $rest = ltrim(substr($plain_text, strlen($prefix_line)), "\n");
+            $html = '<strong>' . esc_html($title) . '</strong>';
+            if ($rest !== '') {
+                $html .= '<br><br>' . nl2br(esc_html($rest), false);
+            }
+            return $html;
+        }
+
+        return null;
     }
 
     private static function sanitize_chat_id(string $chat_id): string {
@@ -1821,17 +1930,34 @@ private static function has_media_payload_markers($payload): bool {
 
         if ($mode === 'excerpt_plain') {
             $excerpt = self::build_excerpt_plain_text($post_id, $settings);
-            return [
-                'mode' => 'excerpt_plain',
-                'text' => $excerpt,
-                'parse_mode' => '',
-                'plain_fallback' => $excerpt,
-            ];
+            return self::wrap_plain_message_result('excerpt_plain', $excerpt, $post_id, $settings);
+        }
+
+        if ($mode === 'title_only') {
+            $title_text = self::build_title_only_text($post_id, $settings);
+            return self::wrap_plain_message_result('title_only', $title_text, $post_id, $settings);
         }
 
         $plain = self::build_text($post_id, $settings);
+        return self::wrap_plain_message_result('plain_text', $plain, $post_id, $settings);
+    }
+
+    /**
+     * @return array{mode:string,text:string,parse_mode:string,format?:string,plain_fallback:string}
+     */
+    private static function wrap_plain_message_result(string $mode, string $plain, int $post_id, array $settings): array {
+        $bold_html = self::maybe_bold_title_html($plain, $post_id, $settings);
+        if ($bold_html !== null) {
+            return [
+                'mode' => $mode,
+                'text' => $bold_html,
+                'parse_mode' => 'HTML',
+                'format' => 'html',
+                'plain_fallback' => $plain,
+            ];
+        }
         return [
-            'mode' => 'plain_text',
+            'mode' => $mode,
             'text' => $plain,
             'parse_mode' => '',
             'plain_fallback' => $plain,
@@ -1841,13 +1967,21 @@ private static function has_media_payload_markers($payload): bool {
 private static function build_test_content(array $settings): array {
     $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
     $url = home_url('/');
+    $append = self::get_append_text_variants($settings);
 
     $plain_tail = "\n\nЭто тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
     $html_tail  = "<br><br>Это тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
 
     if ($mode === 'formatted') {
-        $formatted = "<strong>MAX Autopost: тест форматирования</strong><br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>".$html_tail;
+        $title_html = self::is_bold_title_enabled($settings)
+            ? '<strong>MAX Autopost: тест форматирования</strong>'
+            : 'MAX Autopost: тест форматирования';
+        $formatted = $title_html."<br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>".$html_tail;
+        if ($append['html'] !== '') {
+            $formatted .= '<br><br>' . $append['html'];
+        }
         $plain = "MAX Autopost: тест форматирования\n\nКурсивный текст\nСсылка: ".$url."\n\n• Элемент списка 1\n• Элемент списка 2\n\ncode_example()".$plain_tail;
+        $plain = self::append_plain_tail_preserving_end($plain, (string)$append['plain'], $settings);
 
         return [
             'mode' => 'formatted',
@@ -1858,7 +1992,40 @@ private static function build_test_content(array $settings): array {
         ];
     }
 
-    $plain = "MAX Autopost: тест\n\n".$url.$plain_tail;
+    if ($mode === 'title_only') {
+        $title = 'MAX Autopost: тест (только заголовок)';
+        $plain = self::append_plain_tail_preserving_end($title . $plain_tail, (string)$append['plain'], $settings);
+        if (self::is_bold_title_enabled($settings)) {
+            return [
+                'mode' => 'title_only',
+                'text' => '<strong>'.esc_html($title).'</strong>'.$html_tail.($append['html'] !== '' ? '<br><br>'.$append['html'] : ''),
+                'parse_mode' => 'HTML',
+                'format' => 'html',
+                'plain_fallback' => $plain,
+            ];
+        }
+        return [
+            'mode' => 'title_only',
+            'text' => $plain,
+            'parse_mode' => '',
+            'plain_fallback' => $plain,
+        ];
+    }
+
+    $plain = self::append_plain_tail_preserving_end("MAX Autopost: тест\n\n".$url.$plain_tail, (string)$append['plain'], $settings);
+    if (self::is_bold_title_enabled($settings)) {
+        $html = '<strong>MAX Autopost: тест</strong><br><br>'.esc_html($url).$html_tail;
+        if ($append['html'] !== '') {
+            $html .= '<br><br>' . $append['html'];
+        }
+        return [
+            'mode' => $mode,
+            'text' => $html,
+            'parse_mode' => 'HTML',
+            'format' => 'html',
+            'plain_fallback' => $plain,
+        ];
+    }
 
     return [
         'mode' => $mode,
@@ -1867,6 +2034,22 @@ private static function build_test_content(array $settings): array {
         'plain_fallback' => $plain,
     ];
 }
+
+    private static function build_title_only_text(int $post_id, array $settings): string {
+        $override = trim((string)get_post_meta($post_id, self::META_OVERRIDE, true));
+        $override = str_replace(["\r\n", "\r"], "\n", $override);
+        $append = self::get_append_text_variants($settings);
+
+        if ($override !== '') {
+            // Override has priority even in title_only (manual text for this post).
+            $text = self::clean_publish_text($override);
+            return self::append_plain_tail_preserving_end($text, (string)$append['plain'], $settings);
+        }
+
+        $title = self::clean_publish_text((string)get_the_title($post_id));
+        return self::append_plain_tail_preserving_end($title, (string)$append['plain'], $settings);
+    }
+
     private static function build_excerpt_plain_text(int $post_id, array $settings): string {
         $title = self::clean_publish_text((string)get_the_title($post_id));
         $excerpt = get_the_excerpt($post_id);
@@ -1888,19 +2071,26 @@ private static function build_test_content(array $settings): array {
         $title = esc_html(self::clean_publish_text((string)get_the_title($post_id)));
         $body = trim($normalized);
 
-        $composed = '<strong>' . $title . '</strong>';
+        $composed = self::is_bold_title_enabled($settings)
+            ? ('<strong>' . $title . '</strong>')
+            : $title;
         if ($body !== '') {
             $composed .= '<br><br>' . $body;
         }
 
         $with_fields = self::append_custom_fields_formatted($composed, $post_id, $settings);
         $append = self::get_append_text_variants($settings);
+        $base_html = $with_fields;
         if ($append['html'] !== '') {
             $with_fields .= '<br><br>' . $append['html'];
         }
-        $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
-        if (mb_strlen(self::clean_publish_text(wp_strip_all_tags($with_fields)), 'UTF-8') > $max) {
-            $base_plain = self::clean_publish_text(wp_strip_all_tags(self::append_custom_fields_formatted($composed, $post_id, $settings)));
+
+        $user_max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
+        $budget = self::is_append_in_limit_enabled($settings) ? $user_max : self::MAX_TEXT;
+        $plain_len = mb_strlen(self::clean_publish_text(wp_strip_all_tags($with_fields)), 'UTF-8');
+
+        if ($plain_len > $budget) {
+            $base_plain = self::clean_publish_text(wp_strip_all_tags($base_html));
             return self::append_plain_tail_preserving_end($base_plain, (string)$append['plain'], $settings);
         }
         return $with_fields;
@@ -2069,17 +2259,26 @@ private static function build_test_content(array $settings): array {
             return self::limit_text($base_text, $settings);
         }
 
-        $max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
+        $user_max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
+        $hard_max = self::MAX_TEXT;
         $tail = "\n\n" . $append_plain;
         $tail_len = mb_strlen($tail, 'UTF-8');
-        $base_budget = max(0, $max - $tail_len);
 
+        // OFF: limit applies to main text only; append is added fully; hard-cap total at 3900.
+        if (!self::is_append_in_limit_enabled($settings)) {
+            $base = self::limit_text($base_text, array_merge($settings, ['max_text_limit' => $user_max]));
+            $combined = trim($base . $tail);
+            return self::limit_text($combined, array_merge($settings, ['max_text_limit' => $hard_max]));
+        }
+
+        // ON: user max is the total budget for main + append.
+        $base_budget = max(0, $user_max - $tail_len);
         if ($base_budget <= 0) {
-            return self::limit_text($append_plain, $settings);
+            return self::limit_text($append_plain, array_merge($settings, ['max_text_limit' => $user_max]));
         }
 
         $base = self::limit_text($base_text, array_merge($settings, ['max_text_limit' => $base_budget]));
-        return self::limit_text(trim($base . $tail), $settings);
+        return self::limit_text(trim($base . $tail), array_merge($settings, ['max_text_limit' => $user_max]));
     }
 
     private static function append_custom_fields(string $text, int $post_id, array $settings): string {

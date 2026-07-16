@@ -1,9 +1,9 @@
-# MAX Autopost (Free) v1.10.10
+# MAX Autopost (Free) v1.11.0
 
 Плагин для автоматической отправки постов из WordPress в Max.
 
 ### Установка
-1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.10.10/max-autopost-1.10.10.zip)
+1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.0/max-autopost-1.11.0.zip)
 2. Установи через WordPress → Плагины → Добавить новый → Загрузить плагин
 
 ### Автообновление
@@ -18,6 +18,25 @@
 
 ---
 ⭐ MIT License • [GitHub](https://github.com/A-Krivoshen/max-autopost)
+
+## Что нового в 1.11.0
+- API MAX: **`platform-api2.max.ru`** (до 19.07.2026).
+- **Учитывать «Текст после записи» в общем лимите** (`append_in_limit`).
+- Справка в UI: подпись / бюджет основного / итого.
+- Режим **`title_only`** (только заголовок).
+- Жирный заголовок; фильтр `krv_max_api_host`; сертификат Минцифры на хостинге.
+
+## Что нового в 1.10.12
+- API MAX: переход на **`platform-api2.max.ru`** (требование до 19.07.2026).
+- Фильтр `krv_max_api_host` для кастомного хоста.
+- Сертификат Минцифры — на стороне **хостинга/сервера** WordPress ([gosuslugi.ru/crt](https://www.gosuslugi.ru/crt)).
+
+## Что нового в 1.10.11
+- Настройка **«Выделять заголовок поста жирным»** (`bold_title`, по умолчанию включена).
+- В `plain_text` / `excerpt_plain` заголовок отправляется как `<strong>` через `format=html`, тело остаётся plain.
+- В `formatted` жирный заголовок можно отключить.
+- Fallback на plain text работает и для лёгкого HTML (bold title).
+
 # MAX Autopost (Free) v1.10.2
 = 1.10.3 =
 * Test release for GitHub updater verification.
