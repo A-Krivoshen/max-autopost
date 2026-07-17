@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.11.3
+ * Version: 1.11.4
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.3';
+    private const VERSION = '1.11.4';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -43,6 +43,7 @@ final class KRV_MAX_Autopost {
     private const UPGRADE_NOTICE_OPT = 'krv_max_autopost_upgrade_notice';
 
     private const GITHUB_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost';
+    private const CA_BUNDLE_FILE = __DIR__ . '/assets/certs/russian-trusted-ca.pem';
 
     private const MIN_TEXT   = 200;
     private const MAX_TEXT   = 3900;
@@ -85,6 +86,27 @@ final class KRV_MAX_Autopost {
 
         // Register row/bulk hooks after all CPTs are registered.
         add_action('init', [__CLASS__, 'register_post_type_hooks'], 20);
+
+        // Inject bundled CA for all cURL requests to MAX (fixes missing MinTsifry cert on shared hosting).
+        add_action('http_api_curl', [__CLASS__, 'inject_ca_bundle'], 10, 3);
+    }
+
+    private static function ca_bundle_path(): ?string {
+        $path = self::CA_BUNDLE_FILE;
+        return file_exists($path) && is_readable($path) ? $path : null;
+    }
+
+    public static function inject_ca_bundle($handle, $parsed_args, $url): void {
+        if (!is_resource($handle) && !($handle instanceof \CurlHandle)) {
+            return;
+        }
+        if (!str_contains((string)$url, 'max.ru')) {
+            return;
+        }
+        $ca = self::ca_bundle_path();
+        if ($ca) {
+            curl_setopt($handle, CURLOPT_CAINFO, $ca);
+        }
     }
 
     private static function init_update_checker(): void {
@@ -173,7 +195,7 @@ final class KRV_MAX_Autopost {
         $posts = get_posts([
             'post_type' => 'any',
             'post_status' => 'publish',
-            'numberposts' => -1,
+            'numberposts' => 1000,
             'fields' => 'ids',
             'suppress_filters' => true,
             'meta_query' => [
@@ -419,6 +441,15 @@ final class KRV_MAX_Autopost {
         echo '<p style="margin:0;font-size:14px;"><strong>Поддержка плагина:</strong> по всем вопросам пишите <a href="mailto:aleksey@krivoshein.site">aleksey@krivoshein.site</a>.</p>';
         echo '</div>';
 
+        echo '<div style="max-width:980px;background:#fff;border:1px solid #c5d9ed;padding:14px;margin-bottom:12px;border-left:4px solid #2271b1;">';
+        echo '<p style="margin:0 0 8px;font-size:14px;"><span class="dashicons dashicons-star-filled" style="color:#dba617;vertical-align:text-bottom;"></span> <strong>Нравится плагин?</strong></p>';
+        echo '<p style="margin:0 0 10px;font-size:13px;color:#3c434a;">Если MAX Autopost помогает вашему проекту, вы можете отблагодарить, оставив отзыв. Хороший отзыв помогает продвигать продукты и услуги.</p>';
+        echo '<p style="margin:0 0 10px;font-size:13px;">';
+        echo '<a class="button" style="background:#fff;border-color:#2271b1;color:#2271b1;" href="'.esc_url('https://yandex.ru/maps/org/ip_krivoshein_aleksey_sergeyevich/100156734340/reviews/').'" target="_blank" rel="noopener noreferrer">Оставить отзыв на Яндекс.Картах</a>';
+        echo '</p>';
+        echo '<p style="margin:0;font-size:12px;color:#646970;">Также вы можете ознакомиться с <a href="'.esc_url('https://krivoshein.site/prays-list/').'" target="_blank" rel="noopener noreferrer">другими услугами</a>.</p>';
+        echo '</div>';
+
         echo '<div style="max-width:980px;background:#fff;border:1px solid #dcdcde;padding:14px;">';
         echo '<p style="margin-top:0;"><strong>Реклама</strong> · партнёрский блок FirstVDS.</p>';
         echo '<p style="margin:0 0 12px;">VPS/VDS-хостинг для сайтов, проектов и серверных задач.</p>';
@@ -543,7 +574,7 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
         echo '</select>';
         echo '<p class="description">plain text — совместимый режим; formatted — HTML; excerpt plain — короткий анонс; <strong>только заголовок</strong> — title + картинка + подпись + кнопки (без текста записи).</p>';
         echo '<label style="display:block;margin-top:8px;"><input type="checkbox" name="'.esc_attr(self::OPT).'[bold_title]" value="1" '.checked((int)($s['bold_title'] ?? 1), 1, false).'> Выделять заголовок поста <strong>жирным</strong></label>';
-        echo '<p class="description">В formatted/plain/excerpt/title_only при включённой галочке заголовок уходит как <code>&lt;strong&gt;</code> (format=html).</p>';
+        echo '<p class="description">В formatted/plain/excerpt/title_only при включённой галочке заголовок уходит как <code>&lt;strong&gt;</code> (format=html) с гарантированным отступом от основного текста.</p>';
         echo '</td></tr>';
 
         echo '<tr><th>Текст после записи</th><td>';
@@ -590,7 +621,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
         wp_nonce_field('krv_max_send_test');
         echo '<input type="hidden" name="action" value="krv_max_send_test">';
-        submit_button('Отправить тест','secondary','submit',false);
+        submit_button('Отправить тест','secondary','submit',false,['onclick'=>'return confirm('.wp_json_encode('Отправить тестовое сообщение во все настроенные чаты?').');']);
         echo '</form>';
     }
 
@@ -629,6 +660,26 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $count = (int)$q->found_posts;
         wp_reset_postdata();
         return $count;
+    }
+
+    private static function clear_queue_count_cache(): void {
+        delete_transient('krv_max_queue_counts');
+    }
+
+    private static function get_queue_counts(): array {
+        $cached = get_transient('krv_max_queue_counts');
+        if (is_array($cached)) {
+            return $cached;
+        }
+        $counts = [
+            'all' => self::queue_status_count(null),
+            'queued' => self::queue_status_count('queued'),
+            'error' => self::queue_status_count('error'),
+            'partial_success' => self::queue_status_count('partial_success'),
+            'sent' => self::queue_status_count('sent'),
+        ];
+        set_transient('krv_max_queue_counts', $counts, 10);
+        return $counts;
     }
 
     private static function tab_queue(): void {
@@ -717,13 +768,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
         echo '</div>';
 
-        $counts = [
-            'all' => self::queue_status_count(null),
-            'queued' => self::queue_status_count('queued'),
-            'error' => self::queue_status_count('error'),
-            'partial_success' => self::queue_status_count('partial_success'),
-            'sent' => self::queue_status_count('sent'),
-        ];
+        $counts = self::get_queue_counts();
 
         echo '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 14px;">';
         foreach (['all' => 'Все', 'queued' => 'В очереди', 'error' => 'Ошибка', 'partial_success' => 'Частично', 'sent' => 'Отправлено'] as $key => $label) {
@@ -856,7 +901,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         if ($token === '') {
             echo '<div class="notice notice-warning inline"><p>Сначала укажите Token на вкладке «Настройки», затем вернитесь сюда.</p></div>';
         } else {
-            $res = self::discover_chats($token);
+            $res = self::get_discovered_chats_cached($token);
             if (!empty($res['error'])) {
                 echo '<div class="notice notice-error inline"><p>Не удалось получить чаты: '.esc_html((string)$res['error']).'</p></div>';
             } else {
@@ -987,6 +1032,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         update_post_meta($post_id,self::META_QUEUEDAT,$now);
         update_post_meta($post_id,self::META_QSTAMP,self::current_install_stamp());
         self::log('queue',0,$post_id,$why ?: 'queued');
+        self::clear_queue_count_cache();
     }
 
     private static function requeue_post_with_current_settings(int $post_id, string $why=''): void {
@@ -1001,23 +1047,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             wp_schedule_event(time() + 60, self::CRON_SCHEDULE, self::CRON_HOOK);
         }
 
-        // Avoid piling up many single-events (was a source of burst sends after restart).
-        $next_single = wp_next_scheduled(self::CRON_HOOK);
-        $crons = _get_cron_array();
-        $has_near_single = false;
-        if (is_array($crons)) {
-            $now = time();
-            foreach ($crons as $ts => $hooks) {
-                if (!is_array($hooks) || !isset($hooks[self::CRON_HOOK])) {
-                    continue;
-                }
-                if ((int)$ts <= $now + 30) {
-                    $has_near_single = true;
-                    break;
-                }
-            }
-        }
-        if (!$has_near_single) {
+        $next = wp_next_scheduled(self::CRON_HOOK);
+        if (!$next || $next > time() + 30) {
             wp_schedule_single_event(time() + 5, self::CRON_HOOK);
         }
         self::spawn_cron();
@@ -1110,6 +1141,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             }
         } finally {
             delete_transient(self::CRON_LOCK_KEY);
+            self::clear_queue_count_cache();
         }
     }
 
@@ -1120,114 +1152,122 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     /* ================= ADMIN ACTIONS ================= */
 
-public static function handle_send_test(): void {
-    if (!current_user_can('manage_options')) wp_die('Forbidden');
-    check_admin_referer('krv_max_send_test');
+    public static function handle_send_test(): void {
+        if (!current_user_can('manage_options')) wp_die('Forbidden');
+        check_admin_referer('krv_max_send_test');
 
-    $s = self::get_settings();
-    $token = self::token($s);
-    $targets = self::target_chat_ids($s);
+        $rate_key = 'krv_max_test_rate_' . get_current_user_id();
+        if (get_transient($rate_key)) {
+            self::notice('warning', 'Подождите немного перед повторной тестовой отправкой.');
+            wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
+            exit;
+        }
+        set_transient($rate_key, 1, 15);
 
-    if ($token === '' || empty($targets)) {
-        self::notice('error','Не задан token или chat_id.');
+        $s = self::get_settings();
+        $token = self::token($s);
+        $targets = self::target_chat_ids($s);
+
+        if ($token === '' || empty($targets)) {
+            self::notice('error','Не задан token или chat_id.');
+            wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
+            exit;
+        }
+
+        $test_content = self::build_test_content($s);
+        $payload = [
+            'text'   => (string)$test_content['text'],
+            'notify' => (bool)$s['notify'],
+        ];
+
+        if (!empty($test_content['parse_mode'])) {
+            $payload['parse_mode'] = (string)$test_content['parse_mode'];
+        }
+        if (!empty($test_content['format'])) {
+            $payload['format'] = (string)$test_content['format'];
+        }
+        if (!empty($s['debug'])) {
+            self::log('test_payload', 0, 0, 'mode='.(string)$test_content['mode'].'; format='.(string)($payload['format'] ?? '').'; parse_mode='.(string)($payload['parse_mode'] ?? '').'; text='.self::short((string)$payload['text']));
+        }
+
+        $attachments = [];
+        $test_has_image = false;
+        $test_send_mode = 'test_text_only';
+
+        if (!empty($s['include_image']) && function_exists('curl_init')) {
+            $mode = (string)($s['image_source_mode'] ?? 'post_or_site');
+            if (self::normalize_image_source_mode($mode) !== 'post_only') {
+                $site_icon = (int)get_option('site_icon');
+                if ($site_icon) {
+                    $file = get_attached_file($site_icon);
+                    if (is_string($file) && $file && file_exists($file)) {
+                        $up = self::upload($file, $token, 0);
+
+                        if ($up !== false && self::has_media_payload_markers($up)) {
+                            $attachments[] = [
+                                'type'    => 'image',
+                                'payload' => $up,
+                            ];
+                            $test_has_image = true;
+                        } else {
+                            self::log('test_image_skip', 0, 0, 'Upload вернул невалидный media payload, тест отправлен как text-only');
+                        }
+                    } else {
+                        self::log('test_image_skip', 0, 0, 'Файл site_icon не найден, тест отправлен как text-only');
+                    }
+                } else {
+                    self::log('test_image_skip', 0, 0, 'site_icon не задан, тест отправлен как text-only');
+                }
+            } else {
+                self::log('test_image_skip', 0, 0, 'Режим post_only для теста без поста, тест отправлен как text-only');
+            }
+        }
+
+        $buttons = self::build_inline_keyboard_buttons($s, home_url('/'));
+        if (!empty($buttons)) {
+            $attachments[] = [
+                'type' => 'inline_keyboard',
+                'payload' => [
+                    'buttons' => [$buttons],
+                ],
+            ];
+        }
+
+        if (!empty($attachments)) {
+            $payload['attachments'] = $attachments;
+            $test_send_mode = $test_has_image ? 'test_with_image' : 'test_with_keyboard';
+        }
+        if (!empty($s['debug'])) {
+            self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; button_count='.(int)count($buttons).'; has_image='.(int)$test_has_image);
+        }
+        self::log('test_send_mode', 0, 0, $test_send_mode);
+
+        $dispatch = self::dispatch_to_targets(
+            $payload,
+            $targets,
+            $token,
+            0,
+            (bool)$s['debug'],
+            (string)$test_content['mode'],
+            (string)$test_content['plain_fallback']
+        );
+
+        $worker_msg = '';
+        if (($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success')
+            && !empty($s['enable_worker_after_test'])) {
+            update_option(self::WORKER_ENABLED_OPT, 1, false);
+            $worker_msg = ' Автоворкер включён (как выбрано в настройках).';
+        }
+
+        $notice_type = $dispatch['status'] === 'error'
+            ? 'error'
+            : ($dispatch['status'] === 'partial_success' ? 'warning' : 'success');
+
+        self::notice($notice_type, 'Тест: '.$dispatch['message'].$worker_msg);
+
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
         exit;
     }
-
-    $test_content = self::build_test_content($s);
-    $payload = [
-        'text'   => (string)$test_content['text'],
-        'notify' => (bool)$s['notify'],
-    ];
-
-    if (!empty($test_content['parse_mode'])) {
-        $payload['parse_mode'] = (string)$test_content['parse_mode'];
-    }
-    if (!empty($test_content['format'])) {
-        $payload['format'] = (string)$test_content['format'];
-    }
-    if (!empty($s['debug'])) {
-        self::log('test_payload', 0, 0, 'mode='.(string)$test_content['mode'].'; format='.(string)($payload['format'] ?? '').'; parse_mode='.(string)($payload['parse_mode'] ?? '').'; text='.self::short((string)$payload['text']));
-    }
-
-    $attachments = [];
-    $test_has_image = false;
-    $test_send_mode = 'test_text_only';
-
-    if (!empty($s['include_image']) && function_exists('curl_init')) {
-        $mode = (string)($s['image_source_mode'] ?? 'post_or_site');
-        if (self::normalize_image_source_mode($mode) !== 'post_only') {
-            $site_icon = (int)get_option('site_icon');
-            if ($site_icon) {
-                $file = get_attached_file($site_icon);
-                if (is_string($file) && $file && file_exists($file)) {
-                    $up = self::upload($file, $token, 0);
-
-                    if ($up !== false && self::has_media_payload_markers($up)) {
-                        $attachments[] = [
-                            'type'    => 'image',
-                            'payload' => $up,
-                        ];
-                        $test_has_image = true;
-                    } else {
-                        self::log('test_image_skip', 0, 0, 'Upload вернул невалидный media payload, тест отправлен как text-only');
-                    }
-                } else {
-                    self::log('test_image_skip', 0, 0, 'Файл site_icon не найден, тест отправлен как text-only');
-                }
-            } else {
-                self::log('test_image_skip', 0, 0, 'site_icon не задан, тест отправлен как text-only');
-            }
-        } else {
-            self::log('test_image_skip', 0, 0, 'Режим post_only для теста без поста, тест отправлен как text-only');
-        }
-    }
-
-    $buttons = self::build_inline_keyboard_buttons($s, home_url('/'));
-    if (!empty($buttons)) {
-        $attachments[] = [
-            'type' => 'inline_keyboard',
-            'payload' => [
-                'buttons' => [$buttons],
-            ],
-        ];
-    }
-
-    if (!empty($attachments)) {
-        $payload['attachments'] = $attachments;
-        $test_send_mode = $test_has_image ? 'test_with_image' : 'test_with_keyboard';
-    }
-    if (!empty($s['debug'])) {
-        self::log('test_attachments', 0, 0, 'attachments_count='.(int)count($attachments).'; button_count='.(int)count($buttons).'; has_image='.(int)$test_has_image);
-    }
-    self::log('test_send_mode', 0, 0, $test_send_mode);
-
-    $dispatch = self::dispatch_to_targets(
-        $payload,
-        $targets,
-        $token,
-        0,
-        (bool)$s['debug'],
-        (string)$test_content['mode'],
-        (string)$test_content['plain_fallback']
-    );
-
-    $worker_msg = '';
-    if (($dispatch['status'] === 'success' || $dispatch['status'] === 'partial_success')
-        && !empty($s['enable_worker_after_test'])) {
-        update_option(self::WORKER_ENABLED_OPT, 1, false);
-        $worker_msg = ' Автоворкер включён (как выбрано в настройках).';
-    }
-
-    $notice_type = $dispatch['status'] === 'error'
-        ? 'error'
-        : ($dispatch['status'] === 'partial_success' ? 'warning' : 'success');
-
-    self::notice($notice_type, 'Тест: '.$dispatch['message'].$worker_msg);
-
-    wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=settings'));
-    exit;
-}
 
     public static function handle_clear_logs(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
@@ -1249,6 +1289,7 @@ public static function handle_send_test(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
         check_admin_referer('krv_max_run_queue');
         self::process_queue(true);
+        self::clear_queue_count_cache();
         self::notice('success','Очередь запущена вручную (1 элемент).');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
@@ -1295,6 +1336,7 @@ public static function handle_send_test(): void {
         if ($n > 0) {
             self::trigger_queue_worker();
         }
+        self::clear_queue_count_cache();
         self::notice('success','В очередь из ошибок: '.$n.' (пачка до '.self::REQUEUE_BATCH.'). Повторите для следующей пачки.');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
@@ -1326,6 +1368,7 @@ public static function handle_send_test(): void {
             delete_post_meta($post_id,self::META_NEXTTRY);
             delete_post_meta($post_id,self::META_QUEUEDAT);
             delete_post_meta($post_id,self::META_QSTAMP);
+            self::clear_queue_count_cache();
             self::notice('success','Отправлено в MAX.');
         } elseif ($res['status'] === 'partial_success') {
             update_post_meta($post_id,self::META_STATUS,'partial_success');
@@ -1334,10 +1377,12 @@ public static function handle_send_test(): void {
             delete_post_meta($post_id,self::META_NEXTTRY);
             delete_post_meta($post_id,self::META_QUEUEDAT);
             delete_post_meta($post_id,self::META_QSTAMP);
+            self::clear_queue_count_cache();
             self::notice('warning','Частично отправлено: '.self::short((string)$res['message']));
         } else {
             update_post_meta($post_id,self::META_STATUS,'error');
             update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
+            self::clear_queue_count_cache();
             self::notice('error','Ошибка: '.self::short((string)$res['message']));
         }
 
@@ -1397,6 +1442,7 @@ public static function handle_send_test(): void {
         if ($n > 0) {
             self::trigger_queue_worker();
         }
+        self::clear_queue_count_cache();
         self::notice(
             'success',
             'В очередь добавлено: '.$n.' (пачка до '.self::REQUEUE_BATCH.'). Целей: '.$targets_n.
@@ -1436,6 +1482,7 @@ public static function handle_send_test(): void {
         if ($requeued > 0) {
             self::trigger_queue_worker();
         }
+        self::clear_queue_count_cache();
 
         $targets_n = count(self::target_chat_ids(self::get_settings()));
         $message = 'Переочередь (пачка): '.$requeued.' постов, целей: '.$targets_n.
@@ -1463,8 +1510,8 @@ public static function handle_send_test(): void {
             admin_url('admin-post.php?action=krv_max_queue_now&post_id='.(int)$post->ID),
             'krv_max_queue_now_'.(int)$post->ID
         );
-        $actions['krv_max_send'] = '<a href="'.esc_url($url).'">Отправить в MAX</a>';
-        $actions['krv_max_queue'] = '<a href="'.esc_url($queue_url).'">В очередь MAX</a>';
+        $actions['krv_max_send'] = '<a href="'.esc_url($url).'" onclick="return confirm(\'Отправить эту запись в MAX прямо сейчас?\');">Отправить в MAX</a>';
+        $actions['krv_max_queue'] = '<a href="'.esc_url($queue_url).'" onclick="return confirm(\'Поставить эту запись в очередь MAX?\');">В очередь MAX</a>';
         return $actions;
     }
 
@@ -1648,8 +1695,9 @@ public static function handle_send_test(): void {
         curl_setopt($ch, CURLOPT_TIMEOUT, 60);
         curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
         curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
-        if (defined('CURLPROTO_HTTP')) {
-            // HTTPS only — do not allow http redirect targets.
+        $ca = self::ca_bundle_path();
+        if ($ca) {
+            curl_setopt($ch, CURLOPT_CAINFO, $ca);
         }
 
         $out = curl_exec($ch);
@@ -1702,14 +1750,32 @@ public static function handle_send_test(): void {
         return ['items'=>[], 'error'=> $last_error !== '' ? $last_error : 'Неизвестная ошибка'];
     }
 
+    private static function get_discovered_chats_cached(string $token): array {
+        $cache_key = 'krv_max_discovered_chats';
+        $cached = get_transient($cache_key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+        $res = self::discover_chats($token);
+        if (empty($res['error'])) {
+            set_transient($cache_key, $res, 5 * MINUTE_IN_SECONDS);
+        }
+        return $res;
+    }
+
     private static function max_get_json(string $url, string $token): array {
-        $r = wp_remote_get($url, [
+        $args = [
             'headers'=>[
                 'Authorization'=>$token,
                 'Accept'=>'application/json',
             ],
             'timeout'=>15,
-        ]);
+        ];
+        $ca = self::ca_bundle_path();
+        if ($ca) {
+            $args['sslcertificates'] = $ca;
+        }
+        $r = wp_remote_get($url, $args);
 
         if (is_wp_error($r)) {
             return ['error'=>$r->get_error_message(), 'json'=>null];
@@ -1844,17 +1910,27 @@ public static function handle_send_test(): void {
         return (bool)apply_filters('krv_max_allow_upload_url', $ok, $host, $url);
     }
 
+    /**
+     * POST to MAX messages endpoint for a single chat.
+     *
+     * @return array{ok:bool,message:string,message_id:string,http:int}
+     */
     private static function api(array $payload, string $chat_id, string $token, int $post_id, bool $debug): array {
         $url = self::api_url('/messages?chat_id=' . rawurlencode($chat_id));
 
-        $r = wp_remote_post($url, [
+        $args = [
             'headers'=>[
                 'Authorization'=>$token,
                 'Content-Type'=>'application/json',
             ],
             'body'=>wp_json_encode($payload, JSON_UNESCAPED_UNICODE),
             'timeout'=>20,
-        ]);
+        ];
+        $ca = self::ca_bundle_path();
+        if ($ca) {
+            $args['sslcertificates'] = $ca;
+        }
+        $r = wp_remote_post($url, $args);
 
         if (is_wp_error($r)) {
             $msg = $r->get_error_message();
@@ -1885,39 +1961,44 @@ public static function handle_send_test(): void {
         return ['ok'=>false, 'message'=>$error, 'message_id'=>'', 'http'=>$code];
     }
 
+    /**
+     * Send payload to a single target; fallback to plain text if HTML/formatted fails.
+     *
+     * @return array{ok:bool,message:string,message_id:string,http:int,fallback_used:bool,parse_mode:string,format:string}
+     */
     private static function send_to_target_with_fallback(array $payload, string $chat_id, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
-    $primary = self::api($payload, $chat_id, $token, $post_id, $debug);
-    $primary['fallback_used'] = false;
-    $primary['parse_mode'] = (string)($payload['parse_mode'] ?? '');
-    $primary['format'] = (string)($payload['format'] ?? '');
+        $primary = self::api($payload, $chat_id, $token, $post_id, $debug);
+        $primary['fallback_used'] = false;
+        $primary['parse_mode'] = (string)($payload['parse_mode'] ?? '');
+        $primary['format'] = (string)($payload['format'] ?? '');
 
-    // Fallback for full formatted mode and for light HTML (e.g. bold title in plain/excerpt).
-    $used_html = ($format_mode === 'formatted')
-        || ((string)($payload['format'] ?? '') !== '')
-        || ((string)($payload['parse_mode'] ?? '') !== '');
+        // Fallback for full formatted mode and for light HTML (e.g. bold title in plain/excerpt).
+        $used_html = ($format_mode === 'formatted')
+            || ((string)($payload['format'] ?? '') !== '')
+            || ((string)($payload['parse_mode'] ?? '') !== '');
 
-    if (!empty($primary['ok']) || !$used_html) {
-        return $primary;
+        if (!empty($primary['ok']) || !$used_html) {
+            return $primary;
+        }
+
+        $fallback_payload = [
+            'text'   => $plain_fallback !== '' ? $plain_fallback : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings()),
+            'notify' => (bool)($payload['notify'] ?? true),
+        ];
+
+        self::log(
+            'fallback',
+            (int)($primary['http'] ?? 0),
+            $post_id,
+            '[chat_id='.self::mask_chat_id_for_log($chat_id).'] html/formatted failed, fallback to plain text without attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
+        );
+
+        $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
+        $retry['fallback_used'] = true;
+        $retry['parse_mode'] = '';
+        $retry['format'] = '';
+        return $retry;
     }
-
-    $fallback_payload = [
-        'text'   => $plain_fallback !== '' ? $plain_fallback : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings()),
-        'notify' => (bool)($payload['notify'] ?? true),
-    ];
-
-    self::log(
-        'fallback',
-        (int)($primary['http'] ?? 0),
-        $post_id,
-        '[chat_id='.self::mask_chat_id_for_log($chat_id).'] html/formatted failed, fallback to plain text without attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
-    );
-
-    $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
-    $retry['fallback_used'] = true;
-    $retry['parse_mode'] = '';
-    $retry['format'] = '';
-    return $retry;
-}
 
     /* ================= HELPERS ================= */
     private static function build_inline_keyboard_buttons(array $settings, string $default_url = ''): array {
@@ -2226,23 +2307,28 @@ public static function handle_send_test(): void {
         $normalized = array_values(array_unique($normalized));
         return implode("\n", $normalized);
     }
-private static function has_media_payload_markers($payload): bool {
-    if (!is_array($payload) || empty($payload)) {
-        return false;
-    }
+    private static function has_media_payload_markers($payload): bool {
+        if (!is_array($payload) || empty($payload)) {
+            return false;
+        }
 
-    if (!empty($payload['photos']) || !empty($payload['url']) || !empty($payload['token'])) {
-        return true;
-    }
-
-    foreach ($payload as $value) {
-        if (is_array($value) && self::has_media_payload_markers($value)) {
+        if (!empty($payload['photos']) || !empty($payload['url']) || !empty($payload['token'])) {
             return true;
         }
-    }
 
-    return false;
-}
+        foreach ($payload as $value) {
+            if (is_array($value) && self::has_media_payload_markers($value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+    /**
+     * Dispatch payload to all target chat IDs and aggregate results.
+     *
+     * @return array{status:string,message:string,results:array<int,array{chat_id:string,status:string,message_id:string,error:string}>}
+     */
     private static function dispatch_to_targets(array $payload, array $targets, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
         $results = [];
         $success = 0;
@@ -2327,7 +2413,7 @@ private static function has_media_payload_markers($payload): bool {
         $text = str_replace(["\r\n", "\r"], "\n", $text);
         $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         // nbsp and similar → regular space
-        $text = str_replace(["\xC2\xA0", "\xE2\x80\x87", "\xE2\x80\xAF", ' '], ' ', $text);
+        $text = str_replace(["\xC2\xA0", "\xE2\x80\x87", "\xE2\x80\xAF"], ' ', $text);
         $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+/u', '', $text);
         // Collapse horizontal whitespace only (do not touch newlines).
         $text = preg_replace('/[ \t]+/u', ' ', $text);
@@ -2336,6 +2422,11 @@ private static function has_media_payload_markers($payload): bool {
         return trim((string)$text);
     }
 
+    /**
+     * Build final message envelope for a post based on format mode.
+     *
+     * @return array{mode:string,text:string,parse_mode:string,format?:string,plain_fallback:string}
+     */
     private static function build_message_content(int $post_id, array $settings): array {
         $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
 
@@ -2391,78 +2482,78 @@ private static function has_media_payload_markers($payload): bool {
         ];
     }
 
-private static function build_test_content(array $settings): array {
-    $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
-    $url = home_url('/');
-    $append = self::get_append_text_variants($settings);
+    private static function build_test_content(array $settings): array {
+        $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
+        $url = home_url('/');
+        $append = self::get_append_text_variants($settings);
 
-    $plain_tail = "\n\nЭто тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
-    $html_tail  = "<br><br>Это тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
+        $plain_tail = "\n\nЭто тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
+        $html_tail  = "<br><br>Это тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
 
-    if ($mode === 'formatted') {
-        $title_html = self::is_bold_title_enabled($settings)
-            ? '<strong>MAX Autopost: тест форматирования</strong>'
-            : 'MAX Autopost: тест форматирования';
-        $formatted = $title_html."<br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>".$html_tail;
-        $formatted = self::append_html_block_for_max($formatted, (string)$append['html']);
-        $plain = "MAX Autopost: тест форматирования\n\nКурсивный текст\nСсылка: ".$url."\n\n• Элемент списка 1\n• Элемент списка 2\n\ncode_example()".$plain_tail;
-        $plain = self::append_plain_tail_preserving_end($plain, (string)$append['plain'], $settings);
+        if ($mode === 'formatted') {
+            $title_html = self::is_bold_title_enabled($settings)
+                ? '<strong>MAX Autopost: тест форматирования</strong>'
+                : 'MAX Autopost: тест форматирования';
+            $formatted = $title_html."<br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>".$html_tail;
+            $formatted = self::append_html_block_for_max($formatted, (string)$append['html']);
+            $plain = "MAX Autopost: тест форматирования\n\nКурсивный текст\nСсылка: ".$url."\n\n• Элемент списка 1\n• Элемент списка 2\n\ncode_example()".$plain_tail;
+            $plain = self::append_plain_tail_preserving_end($plain, (string)$append['plain'], $settings);
 
-        return [
-            'mode' => 'formatted',
-            'text' => $formatted,
-            'parse_mode' => 'HTML',
-            'format' => 'html',
-            'plain_fallback' => $plain,
-        ];
-    }
+            return [
+                'mode' => 'formatted',
+                'text' => $formatted,
+                'parse_mode' => 'HTML',
+                'format' => 'html',
+                'plain_fallback' => $plain,
+            ];
+        }
 
-    if ($mode === 'title_only') {
-        $title = 'MAX Autopost: тест (только заголовок)';
-        $plain = self::append_plain_tail_preserving_end($title . $plain_tail, (string)$append['plain'], $settings);
+        if ($mode === 'title_only') {
+            $title = 'MAX Autopost: тест (только заголовок)';
+            $plain = self::append_plain_tail_preserving_end($title . $plain_tail, (string)$append['plain'], $settings);
+            if (self::is_bold_title_enabled($settings)) {
+                $html = self::append_html_block_for_max(
+                    '<strong>'.esc_html($title).'</strong>'.$html_tail,
+                    (string)$append['html']
+                );
+                return [
+                    'mode' => 'title_only',
+                    'text' => $html,
+                    'parse_mode' => 'HTML',
+                    'format' => 'html',
+                    'plain_fallback' => $plain,
+                ];
+            }
+            return [
+                'mode' => 'title_only',
+                'text' => $plain,
+                'parse_mode' => '',
+                'plain_fallback' => $plain,
+            ];
+        }
+
+        $plain = self::append_plain_tail_preserving_end("MAX Autopost: тест\n\n".$url.$plain_tail, (string)$append['plain'], $settings);
         if (self::is_bold_title_enabled($settings)) {
             $html = self::append_html_block_for_max(
-                '<strong>'.esc_html($title).'</strong>'.$html_tail,
+                '<strong>MAX Autopost: тест</strong><br><br>'.esc_html($url).$html_tail,
                 (string)$append['html']
             );
             return [
-                'mode' => 'title_only',
+                'mode' => $mode,
                 'text' => $html,
                 'parse_mode' => 'HTML',
                 'format' => 'html',
                 'plain_fallback' => $plain,
             ];
         }
+
         return [
-            'mode' => 'title_only',
+            'mode' => $mode,
             'text' => $plain,
             'parse_mode' => '',
             'plain_fallback' => $plain,
         ];
     }
-
-    $plain = self::append_plain_tail_preserving_end("MAX Autopost: тест\n\n".$url.$plain_tail, (string)$append['plain'], $settings);
-    if (self::is_bold_title_enabled($settings)) {
-        $html = self::append_html_block_for_max(
-            '<strong>MAX Autopost: тест</strong><br><br>'.esc_html($url).$html_tail,
-            (string)$append['html']
-        );
-        return [
-            'mode' => $mode,
-            'text' => $html,
-            'parse_mode' => 'HTML',
-            'format' => 'html',
-            'plain_fallback' => $plain,
-        ];
-    }
-
-    return [
-        'mode' => $mode,
-        'text' => $plain,
-        'parse_mode' => '',
-        'plain_fallback' => $plain,
-    ];
-}
 
     private static function build_title_only_text(int $post_id, array $settings): string {
         $override = trim((string)get_post_meta($post_id, self::META_OVERRIDE, true));

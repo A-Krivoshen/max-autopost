@@ -2,9 +2,9 @@
 Contributors: drslon
 Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
-Tested up to: 6.6
+Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.11.3
+Stable tag: 1.11.4
 License: MIT
 License URI: https://opensource.org/license/mit/
 

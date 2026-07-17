@@ -1,9 +1,9 @@
-# MAX Autopost (Free) v1.11.3
+# MAX Autopost (Free) v1.11.4
 
 Плагин для автоматической отправки постов из WordPress в Max.
 
 ### Установка
-1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.3/max-autopost-1.11.3.zip)
+1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.4/max-autopost-1.11.4.zip)
 2. Установи через WordPress → Плагины → Добавить новый → Загрузить плагин
 
 ### Автообновление
@@ -18,6 +18,12 @@
 
 ---
 ⭐ MIT License • [GitHub](https://github.com/A-Krivoshen/max-autopost)
+
+## Что нового в 1.11.4
+- Встроенный CA-bundle Минцифры для shared-хостингов.
+- Кэширование счётчиков очереди и поиска Chat ID.
+- Блок отзыва на Яндекс.Картах + другие услуги.
+- Подтверждение перед тестовой отправкой.
 
 ## Что нового в 1.11.3
 - Fix: **подпись** с `<a href>` — отдельный блок `<br><br>`, ссылка остаётся кликабельной при жирном заголовке.
