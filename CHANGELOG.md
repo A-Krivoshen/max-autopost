@@ -1,4 +1,10 @@
 # Changelog
+## 1.11.5
+- **Critical fix:** вложенная `<form>` в метабоксе ломала «Опубликовать» (hidden `action=krv_max_send_now` перебивал WP `action=editpost`). Симптомы: редирект в список записей, «содержимое будет заменено…», галочка «Не отправлять» не помогает. Кнопка «Отправить сейчас» → nonce-ссылка без nested form.
+- Fix: `transition_post_status` раньше `save_post` — галочка «Не отправлять» читается из `$_POST` в том же запросе.
+- Fix SSL shared-хостинг: CA Минцифры **дописывается** к системному/WP CA (не подменяет). Только russian-pem ломал upload CDN (HARICA).
+- Combined CA кэш в `uploads/krv-max-autopost/`; `http_request_args` + `http_api_curl` 9999.
+- Fix картинок: ошибка upload → text-only + лог `send_image_skip` (не валит всю отправку).
 ## 1.11.4
 - Security/Performance: встроенный CA-bundle Минцифры (`assets/certs/russian-trusted-ca.pem`) для shared-хостингов без системного сертификата.
 - Performance: кэширование счётчиков очереди (10 сек) и поиска Chat ID (5 мин) — меньше запросов к БД и API.

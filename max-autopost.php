@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.11.4
+ * Version: 1.11.5
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.4';
+    private const VERSION = '1.11.5';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -43,6 +43,7 @@ final class KRV_MAX_Autopost {
     private const UPGRADE_NOTICE_OPT = 'krv_max_autopost_upgrade_notice';
 
     private const GITHUB_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost';
+    /** Russian Trusted Root + Sub CA (MinTsifry / gosuslugi). Appended to system/WP CA, never used alone. */
     private const CA_BUNDLE_FILE = __DIR__ . '/assets/certs/russian-trusted-ca.pem';
 
     private const MIN_TEXT   = 200;
@@ -87,26 +88,216 @@ final class KRV_MAX_Autopost {
         // Register row/bulk hooks after all CPTs are registered.
         add_action('init', [__CLASS__, 'register_post_type_hooks'], 20);
 
-        // Inject bundled CA for all cURL requests to MAX (fixes missing MinTsifry cert on shared hosting).
-        add_action('http_api_curl', [__CLASS__, 'inject_ca_bundle'], 10, 3);
+        // Shared hosting often lacks MinTsifry CA; inject combined CA for MAX (cURL + Streams).
+        add_filter('http_request_args', [__CLASS__, 'filter_http_request_args'], 10, 2);
+        // Late priority: other plugins/WP may reset CURLOPT_CAINFO before this.
+        add_action('http_api_curl', [__CLASS__, 'inject_ca_bundle'], 9999, 3);
     }
 
+    /**
+     * Path to CA bundle for MAX HTTPS: system/WordPress CAs + Russian Trusted Root/Sub.
+     *
+     * IMPORTANT: CURLOPT_CAINFO / sslcertificates *replace* the trust store.
+     * Using only russian-trusted-ca.pem breaks CDN upload hosts (HARICA on mycdn/okcdn).
+     */
     private static function ca_bundle_path(): ?string {
-        $path = self::CA_BUNDLE_FILE;
-        return file_exists($path) && is_readable($path) ? $path : null;
+        static $resolved = null;
+        if ($resolved !== null) {
+            return $resolved !== '' ? $resolved : null;
+        }
+
+        $russian = self::CA_BUNDLE_FILE;
+        if (!is_readable($russian)) {
+            $resolved = '';
+            return null;
+        }
+
+        $base = self::locate_base_ca_bundle();
+        if ($base === null) {
+            // No system/WP CA file — Russian-only still validates platform-api2.max.ru.
+            $resolved = $russian;
+            return $resolved;
+        }
+
+        $combined = self::build_combined_ca_bundle($base, $russian);
+        $resolved = $combined !== null ? $combined : $russian;
+        return $resolved;
+    }
+
+    /**
+     * Prefer WordPress bundled CA, then php.ini / OS defaults.
+     */
+    private static function locate_base_ca_bundle(): ?string {
+        $candidates = [];
+
+        if (defined('ABSPATH') && defined('WPINC')) {
+            $candidates[] = ABSPATH . WPINC . '/certificates/ca-bundle.crt';
+        }
+
+        foreach (['curl.cainfo', 'openssl.cafile'] as $ini_key) {
+            $v = ini_get($ini_key);
+            if (is_string($v) && $v !== '') {
+                $candidates[] = $v;
+            }
+        }
+
+        $candidates[] = '/etc/ssl/certs/ca-certificates.crt';
+        $candidates[] = '/etc/pki/tls/certs/ca-bundle.crt';
+        $candidates[] = '/etc/ssl/cert.pem';
+
+        $russian_real = realpath(self::CA_BUNDLE_FILE) ?: self::CA_BUNDLE_FILE;
+
+        foreach ($candidates as $path) {
+            if (!is_string($path) || $path === '' || !is_readable($path)) {
+                continue;
+            }
+            // Never treat our small Russian-only file as the "base" store.
+            $real = realpath($path) ?: $path;
+            if ($real === $russian_real) {
+                continue;
+            }
+            $size = @filesize($path);
+            if ($size !== false && $size > 1000) {
+                return $path;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Write (or reuse) merged PEM: base CA store + MinTsifry roots.
+     * Cached under uploads or system temp so shared hosts do not re-merge every request.
+     */
+    private static function build_combined_ca_bundle(string $base, string $russian): ?string {
+        $base_mtime = (int)@filemtime($base);
+        $ru_mtime   = (int)@filemtime($russian);
+        $sig        = substr(hash('sha256', $base . '|' . $russian . '|' . $base_mtime . '|' . $ru_mtime), 0, 16);
+        $filename   = 'ca-combined-' . $sig . '.pem';
+
+        $dirs = [];
+        if (function_exists('wp_upload_dir')) {
+            $upload = wp_upload_dir(null, false);
+            if (empty($upload['error']) && !empty($upload['basedir'])) {
+                $dirs[] = trailingslashit((string)$upload['basedir']) . 'krv-max-autopost';
+            }
+        }
+        if (function_exists('get_temp_dir')) {
+            $dirs[] = trailingslashit(get_temp_dir()) . 'krv-max-autopost';
+        }
+        $dirs[] = trailingslashit(sys_get_temp_dir()) . 'krv-max-autopost';
+
+        foreach ($dirs as $dir) {
+            $target = trailingslashit($dir) . $filename;
+            if (is_readable($target)) {
+                $tsize = (int)@filesize($target);
+                $bsize = (int)@filesize($base);
+                if ($tsize > $bsize) {
+                    return $target;
+                }
+            }
+
+            if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+                continue;
+            }
+
+            $base_data = @file_get_contents($base);
+            $ru_data   = @file_get_contents($russian);
+            if ($base_data === false || $ru_data === false || $base_data === '' || $ru_data === '') {
+                continue;
+            }
+
+            $payload = rtrim($base_data) . "\n\n" . trim($ru_data) . "\n";
+            $tmp     = $target . '.tmp.' . getmypid();
+            if (@file_put_contents($tmp, $payload, LOCK_EX) === false) {
+                @unlink($tmp);
+                continue;
+            }
+            if (!@rename($tmp, $target)) {
+                @unlink($target);
+                if (!@rename($tmp, $target)) {
+                    @unlink($tmp);
+                    continue;
+                }
+            }
+
+            return is_readable($target) ? $target : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Attach combined CA for wp_remote_* (cURL + Streams transports).
+     *
+     * @param array  $args
+     * @param string $url
+     * @return array
+     */
+    public static function filter_http_request_args($args, $url) {
+        if (!is_array($args)) {
+            return $args;
+        }
+        if (!self::url_needs_max_ca((string)$url)) {
+            return $args;
+        }
+        $ca = self::ca_bundle_path();
+        if ($ca) {
+            $args['sslcertificates'] = $ca;
+        }
+        return $args;
     }
 
     public static function inject_ca_bundle($handle, $parsed_args, $url): void {
         if (!is_resource($handle) && !($handle instanceof \CurlHandle)) {
             return;
         }
-        if (!str_contains((string)$url, 'max.ru')) {
+        if (!self::url_needs_max_ca((string)$url)) {
             return;
         }
         $ca = self::ca_bundle_path();
         if ($ca) {
             curl_setopt($handle, CURLOPT_CAINFO, $ca);
         }
+    }
+
+    /** True for MAX API and known MAX/VK media hosts used in upload step2. */
+    private static function url_needs_max_ca(string $url): bool {
+        if ($url === '') {
+            return false;
+        }
+        $host = strtolower((string)(wp_parse_url($url, PHP_URL_HOST) ?: ''));
+        if ($host === '') {
+            return str_contains($url, 'max.ru');
+        }
+        $suffixes = [
+            'max.ru',
+            'oneme.ru',
+            'okcdn.ru',
+            'mycdn.me',
+            'vkuserphoto.ru',
+            'userapi.com',
+        ];
+        foreach ($suffixes as $suffix) {
+            if ($host === $suffix || str_ends_with($host, '.' . $suffix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Merge CA path into wp_remote_* $args (explicit, in addition to global filter).
+     *
+     * @param array $args
+     * @return array
+     */
+    private static function with_ssl_ca(array $args): array {
+        $ca = self::ca_bundle_path();
+        if ($ca) {
+            $args['sslcertificates'] = $ca;
+        }
+        return $args;
     }
 
     private static function init_update_checker(): void {
@@ -401,7 +592,7 @@ final class KRV_MAX_Autopost {
             echo '<div class="notice notice-info"><p><strong>MAX Autopost '.esc_html($ver).'</strong> — плагин обновлён. ';
             echo 'API: <code>platform-api2.max.ru</code>. Автоворкер выключен, старая очередь заблокирована (защита от массовой рассылки). ';
             echo 'Проверьте <a href="'.esc_url(admin_url('admin.php?page=krv-max-autopost&tab=settings')).'">настройки</a> и «Отправить тест». ';
-            echo 'Если SSL-ошибка — сертификат Минцифры на хостинге: <a href="https://www.gosuslugi.ru/crt" target="_blank" rel="noopener noreferrer">gosuslugi.ru/crt</a>. ';
+            echo 'SSL: плагин сам подмешивает CA Минцифры (не нужен системный cert на shared-хостинге). ';
             echo '<a href="'.esc_url($dismiss).'">Скрыть</a>.</p></div>';
         }
     }
@@ -894,8 +1085,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         echo '<h3>API MAX (с 19 июля 2026)</h3>';
         echo '<p>Плагин обращается к <code>'.esc_html(self::api_base()).'</code> (миграция с <code>platform-api.max.ru</code>).</p>';
-        echo '<p>По требованиям MAX на стороне <strong>сервера WordPress</strong> (хостинг) в доверенные корневые сертификаты должен быть установлен <strong>сертификат Минцифры</strong>. Пользователю сайта обычно ничего ставить на ПК не нужно — это задача хостинга/администратора сервера. Инструкция: <a href="https://www.gosuslugi.ru/crt" target="_blank" rel="noopener noreferrer">gosuslugi.ru/crt</a>.</p>';
-        echo '<p>Если после обновления тест падает с ошибкой SSL/certificate — напишите в поддержку хостинга: «нужно добавить корневые сертификаты Минцифры (НЦУЦ) в системное хранилище CA».</p>';
+        echo '<p><strong>SSL / сертификат Минцифры:</strong> <code>platform-api2.max.ru</code> выдан Russian Trusted CA. Плагин сам подмешивает корневые CA Минцифры к системному/WordPress CA-bundle — на shared-хостинге обычно <em>ничего ставить не нужно</em>.</p>';
+        echo '<p>Если SSL всё равно падает (редко: open_basedir / нет прав писать temp / старый OpenSSL) — попросите хостинг добавить сертификаты с <a href="https://www.gosuslugi.ru/crt" target="_blank" rel="noopener noreferrer">gosuslugi.ru/crt</a> в системное хранилище CA.</p>';
 
         $token = self::token($s);
         if ($token === '') {
@@ -978,17 +1169,19 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<p><strong>Свой текст (override)</strong>:</p>';
         echo '<textarea name="krv_max_override" class="widefat" style="min-height:80px;">'.esc_textarea($override).'</textarea>';
 
-        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="margin-top:10px;">';
-        wp_nonce_field('krv_max_send_now_'.(int)$post->ID);
-        echo '<input type="hidden" name="action" value="krv_max_send_now">';
-        echo '<input type="hidden" name="post_id" value="'.esc_attr((string)(int)$post->ID).'">';
-        echo '<button type="submit" class="button button-secondary">Отправить сейчас</button>';
-        echo '</form>';
+        // NEVER nest <form> here: the post editor is already a form.
+        // Nested form + hidden name="action" breaks Publish (overwrites WP action=editpost).
+        $send_now_url = wp_nonce_url(
+            admin_url('admin-post.php?action=krv_max_send_now&post_id='.(int)$post->ID),
+            'krv_max_send_now_'.(int)$post->ID
+        );
+        echo '<p style="margin-top:10px;"><a class="button button-secondary" href="'.esc_url($send_now_url).'" onclick="return confirm(\'Отправить эту запись в MAX прямо сейчас?\');">Отправить сейчас</a></p>';
     }
 
     public static function save_metabox(int $post_id, WP_Post $post): void {
         if (!self::is_supported_post_type($post->post_type)) return;
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
+        if (wp_is_post_revision($post_id) || wp_is_post_autosave($post_id)) return;
 
         if (!isset($_POST['krv_max_metabox_nonce']) || !wp_verify_nonce((string)$_POST['krv_max_metabox_nonce'],'krv_max_metabox')) return;
         if (!current_user_can('edit_post',$post_id)) return;
@@ -1012,10 +1205,30 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         if ($old_status === 'publish') return;
 
         $post_id = (int)$post->ID;
-        if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return;
+
+        // transition_post_status runs BEFORE save_post, so the metabox checkbox
+        // is not in postmeta yet — read the current request first.
+        if (self::is_disable_requested_for_post($post_id)) {
+            return;
+        }
 
         self::queue_post($post_id,'Auto queue on publish');
         self::trigger_queue_worker();
+    }
+
+    /**
+     * True if this post must not be sent to MAX (metabox checkbox or saved meta).
+     * Safe during transition_post_status (before save_metabox writes meta).
+     */
+    private static function is_disable_requested_for_post(int $post_id): bool {
+        if (
+            isset($_POST['krv_max_metabox_nonce'])
+            && wp_verify_nonce((string)$_POST['krv_max_metabox_nonce'], 'krv_max_metabox')
+        ) {
+            // Explicit checkbox state from the same editor submit.
+            return !empty($_POST['krv_max_disable']);
+        }
+        return (int)get_post_meta($post_id, self::META_DISABLE, true) === 1;
     }
 
     public static function queue_on_future_publish(WP_Post $post): void {
@@ -1577,13 +1790,16 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
         $attachments = [];
 
-        // IMAGE first
+        // IMAGE first — soft-fail: SSL/CDN glitches must not block the whole send.
         if (!empty($s['include_image']) && function_exists('curl_init')) {
             $file = self::resolve_image_file($post_id, $s);
             if ($file) {
                 $up = self::upload($file, $token, $post_id);
-                if ($up === false) return ['status'=>'error', 'message'=>'Upload failed (see logs)', 'results'=>[]];
-                $attachments[] = ['type'=>'image','payload'=>$up]; // IMPORTANT: full JSON
+                if ($up === false) {
+                    self::log('send_image_skip', 0, $post_id, 'Upload failed, sending text-only (see upload_* logs)');
+                } else {
+                    $attachments[] = ['type'=>'image','payload'=>$up]; // IMPORTANT: full JSON
+                }
             }
         }
 
@@ -1653,14 +1869,14 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         // step1
-        $r1 = wp_remote_post(self::api_url('/uploads?type=image'), [
+        $r1 = wp_remote_post(self::api_url('/uploads?type=image'), self::with_ssl_ca([
             'headers'=>[
                 'Authorization'=>$token,
                 'Content-Type'=>'application/json',
             ],
             'body'=>'{}',
             'timeout'=>20,
-        ]);
+        ]));
 
         if (is_wp_error($r1)) {
             self::log('upload_step1', 0, $post_id, self::sanitize_upload_log_text($r1->get_error_message()));
@@ -1764,17 +1980,13 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     private static function max_get_json(string $url, string $token): array {
-        $args = [
+        $args = self::with_ssl_ca([
             'headers'=>[
                 'Authorization'=>$token,
                 'Accept'=>'application/json',
             ],
             'timeout'=>15,
-        ];
-        $ca = self::ca_bundle_path();
-        if ($ca) {
-            $args['sslcertificates'] = $ca;
-        }
+        ]);
         $r = wp_remote_get($url, $args);
 
         if (is_wp_error($r)) {
@@ -1918,18 +2130,14 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     private static function api(array $payload, string $chat_id, string $token, int $post_id, bool $debug): array {
         $url = self::api_url('/messages?chat_id=' . rawurlencode($chat_id));
 
-        $args = [
+        $args = self::with_ssl_ca([
             'headers'=>[
                 'Authorization'=>$token,
                 'Content-Type'=>'application/json',
             ],
             'body'=>wp_json_encode($payload, JSON_UNESCAPED_UNICODE),
             'timeout'=>20,
-        ];
-        $ca = self::ca_bundle_path();
-        if ($ca) {
-            $args['sslcertificates'] = $ca;
-        }
+        ]);
         $r = wp_remote_post($url, $args);
 
         if (is_wp_error($r)) {

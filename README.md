@@ -1,9 +1,9 @@
-# MAX Autopost (Free) v1.11.4
+# MAX Autopost (Free) v1.11.5
 
 Плагин для автоматической отправки постов из WordPress в Max.
 
 ### Установка
-1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.4/max-autopost-1.11.4.zip)
+1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.5/max-autopost-1.11.5.zip)
 2. Установи через WordPress → Плагины → Добавить новый → Загрузить плагин
 
 ### Автообновление
@@ -18,6 +18,12 @@
 
 ---
 ⭐ MIT License • [GitHub](https://github.com/A-Krivoshen/max-autopost)
+
+## Что нового в 1.11.5
+- **Critical:** nested `<form>` в метабоксе ломал «Опубликовать» (WP `action=editpost` перетирался).
+- Галочка «Не отправлять в MAX» работает при первой публикации.
+- **SSL shared-hosting:** CA Минцифры + системный CA (не вместо него).
+- Ошибка upload картинки → отправка text-only, не полный fail.
 
 ## Что нового в 1.11.4
 - Встроенный CA-bundle Минцифры для shared-хостингов.

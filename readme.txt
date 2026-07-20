@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.11.4
+Stable tag: 1.11.5
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,14 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.11.5 =
+* Critical: nested form в метабоксе ломал Publish — кнопка «Отправить сейчас» без <form>.
+* Галочка «Не отправлять» учитывается при publish (до save_post).
+* SSL: CA Минцифры + системный/WP bundle; soft-fail upload → text-only.
+
+= 1.11.4 =
+* Встроенный CA Минцифры для shared-хостингов; кэш счётчиков/чатов; UX.
+
 = 1.11.3 =
 * Fix: подпись (`post_append_text`) с `<a href>` — отдельный блок и кликабельная ссылка при bold_title.
 * clean_publish_text: корректная нормализация переносов.
