@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.11.5
+Stable tag: 1.11.6
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,12 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.11.6 =
+* Fix MAX HTML: заголовок, URL, текст записи и подпись больше не склеиваются при удалении неподдерживаемых `<br>` / `<p>`.
+* Все HTML-разрывы преобразуются в реальные LF; исправлены тест, plain+bold, excerpt, title-only, formatted и custom fields.
+* Сохранена совместимость с подписями, содержащими `<br>`; payload использует документированный `format=html` без `parse_mode`.
+* Сохраняются поддерживаемые MAX-теги и пробелы внутри `<pre>`; HTML проверяется по лимиту до отправки.
+
 = 1.11.5 =
 * Critical: nested form в метабоксе ломал Publish — кнопка «Отправить сейчас» без <form>.
 * Галочка «Не отправлять» учитывается при publish (до save_post).

@@ -1,9 +1,9 @@
-# MAX Autopost (Free) v1.11.5
+# MAX Autopost (Free) v1.11.6
 
 Плагин для автоматической отправки постов из WordPress в Max.
 
 ### Установка
-1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.5/max-autopost-1.11.5.zip)
+1. Скачай [последний ZIP](https://github.com/A-Krivoshen/max-autopost/releases/download/v1.11.6/max-autopost-1.11.6.zip)
 2. Установи через WordPress → Плагины → Добавить новый → Загрузить плагин
 
 ### Автообновление
@@ -18,6 +18,12 @@
 
 ---
 ⭐ MIT License • [GitHub](https://github.com/A-Krivoshen/max-autopost)
+
+## Что нового в 1.11.6
+- Исправлено склеивание жирного заголовка, URL, текста записи и подписи в MAX HTML.
+- Неподдерживаемые MAX теги `<br>` / `<p>` преобразуются в реальные переводы строк перед отправкой.
+- Payload использует документированный `format=html` без `parse_mode`; сохранённые подписи с `<br>` продолжают работать.
+- Поддерживаемые MAX-теги и содержимое `<pre>` сохраняются; лимит сообщения проверяется до отправки.
 
 ## Что нового в 1.11.5
 - **Critical:** nested `<form>` в метабоксе ломал «Опубликовать» (WP `action=editpost` перетирался).

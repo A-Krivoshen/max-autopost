@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.11.5
+ * Version: 1.11.6
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.5';
+    private const VERSION = '1.11.6';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -48,6 +48,7 @@ final class KRV_MAX_Autopost {
 
     private const MIN_TEXT   = 200;
     private const MAX_TEXT   = 3900;
+    private const API_TEXT_MAX = 4000;
     private const BATCH_LIMIT = 1;
     private const LOG_LIMIT   = 50;
     /** Max posts touched per bulk queue/requeue click (avoid timeouts / accidental mass send). */
@@ -1393,14 +1394,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             'notify' => (bool)$s['notify'],
         ];
 
-        if (!empty($test_content['parse_mode'])) {
-            $payload['parse_mode'] = (string)$test_content['parse_mode'];
-        }
         if (!empty($test_content['format'])) {
             $payload['format'] = (string)$test_content['format'];
         }
         if (!empty($s['debug'])) {
-            self::log('test_payload', 0, 0, 'mode='.(string)$test_content['mode'].'; format='.(string)($payload['format'] ?? '').'; parse_mode='.(string)($payload['parse_mode'] ?? '').'; text='.self::short((string)$payload['text']));
+            self::log('test_payload', 0, 0, 'mode='.(string)$test_content['mode'].'; format='.(string)($payload['format'] ?? '').'; line_breaks='.substr_count((string)$payload['text'], "\n").'; text='.self::short((string)$payload['text']));
         }
 
         $attachments = [];
@@ -1778,13 +1776,10 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $append = self::get_append_text_variants($s);
         if (!empty($s['debug'])) {
             self::log('send_mode', 0, $post_id, 'mode='.(string)$message['mode'].'; format='.(string)($message['format'] ?? '').'; append='.(int)($append['raw'] !== ''));
-            self::log('send_payload', 0, $post_id, 'parse_mode='.(string)($message['parse_mode'] ?? '').'; format='.(string)($message['format'] ?? '').'; text='.self::short($text));
+            self::log('send_payload', 0, $post_id, 'format='.(string)($message['format'] ?? '').'; line_breaks='.substr_count($text, "\n").'; text='.self::short($text));
         }
 
         $payload = ['text'=>$text,'notify'=>(bool)$s['notify']];
-        if (!empty($message['parse_mode'])) {
-            $payload['parse_mode'] = (string)$message['parse_mode'];
-        }
         if (!empty($message['format'])) {
             $payload['format'] = (string)$message['format'];
         }
@@ -1822,6 +1817,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         // Dedupe (stable hash w/o upload payload)
         $sig = [
             'text'=>$payload['text'],
+            'format'=>(string)($payload['format'] ?? ''),
             'notify'=>$payload['notify'],
             'has_image'=>(int)(isset($attachments[0]) && $attachments[0]['type']==='image'),
             'has_button'=>(int)!empty($s['add_button']),
@@ -2128,6 +2124,10 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
      * @return array{ok:bool,message:string,message_id:string,http:int}
      */
     private static function api(array $payload, string $chat_id, string $token, int $post_id, bool $debug): array {
+        if (($payload['format'] ?? '') === 'html' && isset($payload['text'])) {
+            $payload['text'] = self::finalize_max_html_text((string)$payload['text']);
+        }
+
         $url = self::api_url('/messages?chat_id=' . rawurlencode($chat_id));
 
         $args = self::with_ssl_ca([
@@ -2172,18 +2172,16 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     /**
      * Send payload to a single target; fallback to plain text if HTML/formatted fails.
      *
-     * @return array{ok:bool,message:string,message_id:string,http:int,fallback_used:bool,parse_mode:string,format:string}
+     * @return array{ok:bool,message:string,message_id:string,http:int,fallback_used:bool,format:string}
      */
     private static function send_to_target_with_fallback(array $payload, string $chat_id, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
         $primary = self::api($payload, $chat_id, $token, $post_id, $debug);
         $primary['fallback_used'] = false;
-        $primary['parse_mode'] = (string)($payload['parse_mode'] ?? '');
         $primary['format'] = (string)($payload['format'] ?? '');
 
         // Fallback for full formatted mode and for light HTML (e.g. bold title in plain/excerpt).
         $used_html = ($format_mode === 'formatted')
-            || ((string)($payload['format'] ?? '') !== '')
-            || ((string)($payload['parse_mode'] ?? '') !== '');
+            || ((string)($payload['format'] ?? '') !== '');
 
         if (!empty($primary['ok']) || !$used_html) {
             return $primary;
@@ -2203,7 +2201,6 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
         $retry['fallback_used'] = true;
-        $retry['parse_mode'] = '';
         $retry['format'] = '';
         return $retry;
     }
@@ -2291,36 +2288,39 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     /**
-     * Convert plain text to MAX-safe HTML line breaks.
-     * MAX HTML mode often ignores raw \n / \n\n — use explicit <br> / <br><br>.
+     * Escape plain text for MAX HTML while preserving LF line breaks.
      */
     private static function plain_text_to_max_html(string $text): string {
         $text = str_replace(["\r\n", "\r"], "\n", $text);
-        // Escape first so user content cannot inject tags.
-        $text = esc_html($text);
-        // Paragraph breaks first, then single line breaks.
-        $text = preg_replace("/\n{2,}/u", '<br><br>', $text);
-        $text = str_replace("\n", '<br>', (string)$text);
-        return $text;
+        return esc_html($text);
     }
 
     /**
-     * MAX HTML often ignores <p>; convert block paragraphs to <br><br> for readable spacing.
+     * MAX strips unsupported <br>/<p> tags without inserting whitespace.
+     * Convert them to literal LF before the payload reaches the API.
      */
-    private static function max_html_normalize_blocks(string $html): string {
-        $html = preg_replace('/<\s*br\s*\/?\s*>/i', '<br>', $html);
-        // </p><p> → visual paragraph
-        $html = preg_replace('/<\/\s*p\s*>\s*<\s*p(?:\s[^>]*)?>/i', '<br><br>', (string)$html);
-        // Remaining open/close p
-        $html = preg_replace('/<\s*\/?\s*p(?:\s[^>]*)?>/i', '', (string)$html);
-        // Collapse accidental 3+ breaks
-        $html = preg_replace('/(?:<br>){3,}/i', '<br><br>', (string)$html);
-        return trim((string)$html);
+    private static function finalize_max_html_text(string $html): string {
+        $html = str_replace(["\r\n", "\r"], "\n", $html);
+        $parts = preg_split('/(<pre\b[^>]*>.*?<\/pre>)/is', $html, -1, PREG_SPLIT_DELIM_CAPTURE);
+        if ($parts === false) {
+            $parts = [$html];
+        }
+
+        foreach ($parts as $index => $part) {
+            if (($index % 2) === 1) {
+                continue;
+            }
+            $part = preg_replace('/<\s*br\s*\/?\s*>/i', "\n", $part);
+            $part = preg_replace('/<\s*\/?\s*p(?:\s[^>]*)?>/i', "\n\n", (string)$part);
+            $part = preg_replace("/[ \t]*\n[ \t]*/u", "\n", (string)$part);
+            $parts[$index] = preg_replace("/\n{3,}/u", "\n\n", (string)$part);
+        }
+
+        return trim(implode('', $parts));
     }
 
     /**
-     * Build MAX HTML with bold title and guaranteed visual gap before body.
-     * Always: <strong>Title</strong><br><br>BodyWithBr
+     * Build MAX HTML with a bold title and a literal blank line before body.
      * Does NOT include post_append_text — attach via append_html_block_for_max().
      */
     private static function compose_bold_title_html(string $title, string $body_plain): string {
@@ -2330,15 +2330,14 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         $html = '<strong>' . esc_html($title) . '</strong>';
         if ($body_plain !== '') {
-            // Strict visual separator for MAX HTML mode.
-            $html .= '<br><br>' . self::plain_text_to_max_html($body_plain);
+            $html .= "\n\n" . self::plain_text_to_max_html($body_plain);
         }
-        return $html;
+        return self::finalize_max_html_text($html);
     }
 
     /**
      * Prepare «Текст после записи» for MAX HTML.
-     * Keeps safe <a href> / <br>; does not esc_html the whole string (that would kill links).
+     * Keeps safe links and converts saved <br> tags to literal line breaks.
      */
     private static function prepare_append_html_for_max(string $html): string {
         $html = trim($html);
@@ -2352,17 +2351,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             return '';
         }
 
-        // Normalize breaks; bare newlines (if any) become <br> so MAX shows spacing.
-        $html = preg_replace('/<\s*br\s*\/?\s*>/i', '<br>', $html);
-        $html = preg_replace("/\n+/u", '<br>', (string)$html);
-        $html = preg_replace('/(?:<br>){3,}/i', '<br><br>', (string)$html);
-
         // Ensure links are safe absolute http(s) only; keep label text safe.
         $html = preg_replace_callback('/<a\b([^>]*)>(.*?)<\/a>/is', static function ($m) {
             $attrs = (string)($m[1] ?? '');
-            // Allow only text + <br> inside the link label.
+            // Allow only text and saved line breaks inside the link label.
             $inner = (string)wp_kses((string)($m[2] ?? ''), ['br' => []]);
-            $inner = preg_replace('/<\s*br\s*\/?\s*>/i', '<br>', (string)$inner);
             $url = '';
             if (preg_match('/\bhref\s*=\s*(["\'])(.*?)\1/i', $attrs, $hm)) {
                 $url = (string)$hm[2];
@@ -2376,7 +2369,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             return '<a href="' . esc_attr($url) . '">' . $inner . '</a>';
         }, $html);
 
-        return trim((string)$html);
+        return self::finalize_max_html_text((string)$html);
     }
 
     /**
@@ -2390,7 +2383,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         if ($html === '') {
             return $append_html;
         }
-        return rtrim($html) . '<br><br>' . $append_html;
+        return rtrim($html) . "\n\n" . $append_html;
     }
 
     /**
@@ -2424,8 +2417,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     /**
      * When bold_title is on, convert a finished plain message into MAX HTML with:
      * - <strong>title</strong>
-     * - <br><br> before body
-     * - body newlines as <br>/<br><br>
+     * - a literal blank line before body
+     * - literal LF line breaks in body
      * - «Текст после записи» as a separate HTML block (keeps <a href>, not esc_html'd)
      *
      * Returns null when bold is off, title empty, or plain text is an override
@@ -2557,7 +2550,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             $results[] = $row;
             self::log_target_result($post_id, $row);
             if ($debug) {
-                self::log('dispatch_debug', 0, $post_id, '[chat_id='.self::mask_chat_id_for_log($chat_id).'] format_mode='.$format_mode.'; parse_mode='.(string)($send['parse_mode'] ?? '').'; fallback='.(int)!empty($send['fallback_used']));
+                self::log('dispatch_debug', 0, $post_id, '[chat_id='.self::mask_chat_id_for_log($chat_id).'] format_mode='.$format_mode.'; format='.(string)($send['format'] ?? '').'; fallback='.(int)!empty($send['fallback_used']));
             }
 
             if ($row['status'] === 'success') {
@@ -2631,23 +2624,62 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     /**
+     * Build an HTML envelope and stay within MAX's hard visible-text limit.
+     * The plain variant is already length-limited and is safe as a local fallback.
+     *
+     * @return array{mode:string,text:string,format?:string,plain_fallback:string}
+     */
+    private static function wrap_html_message_result(string $mode, string $html, string $plain, ?int $visible_limit = null): array {
+        $html = self::finalize_max_html_text($html);
+        $visible_limit = $visible_limit === null
+            ? self::MAX_TEXT
+            : max(0, min(self::MAX_TEXT, $visible_limit));
+        if (
+            self::max_html_visible_length($html) > $visible_limit
+            || mb_strlen($html, 'UTF-8') > self::API_TEXT_MAX
+        ) {
+            return [
+                'mode' => $mode,
+                'text' => $plain,
+                'plain_fallback' => $plain,
+            ];
+        }
+
+        return [
+            'mode' => $mode,
+            'text' => $html,
+            'format' => 'html',
+            'plain_fallback' => $plain,
+        ];
+    }
+
+    private static function max_html_visible_length(string $html): int {
+        $text = wp_strip_all_tags(self::finalize_max_html_text($html));
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = str_replace(["\r\n", "\r"], "\n", $text);
+        return mb_strlen($text, 'UTF-8');
+    }
+
+    /**
      * Build final message envelope for a post based on format mode.
      *
-     * @return array{mode:string,text:string,parse_mode:string,format?:string,plain_fallback:string}
+     * @return array{mode:string,text:string,format?:string,plain_fallback:string}
      */
     private static function build_message_content(int $post_id, array $settings): array {
         $mode = self::normalize_message_format((string)($settings['message_format'] ?? 'plain_text'));
 
         if ($mode === 'formatted') {
             $formatted = self::build_formatted_text($post_id, $settings);
+            if (empty($formatted['is_html'])) {
+                $text = (string)$formatted['text'];
+                return [
+                    'mode' => 'formatted',
+                    'text' => $text,
+                    'plain_fallback' => $text,
+                ];
+            }
             $plain = self::build_text($post_id, array_merge($settings, ['message_format' => 'plain_text']));
-            return [
-                'mode' => 'formatted',
-                'text' => $formatted,
-                'parse_mode' => 'HTML',
-                'format' => 'html',
-                'plain_fallback' => $plain,
-            ];
+            return self::wrap_html_message_result('formatted', (string)$formatted['text'], $plain);
         }
 
         if ($mode === 'excerpt_plain') {
@@ -2666,26 +2698,19 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     /**
      * Final envelope for plain-like modes (plain_text / excerpt_plain / title_only).
-     * When bold_title is enabled, always send HTML (format=html) with <br><br> after the title.
+     * When bold_title is enabled, send documented MAX HTML with literal LF separators.
      *
-     * @return array{mode:string,text:string,parse_mode:string,format?:string,plain_fallback:string}
+     * @return array{mode:string,text:string,format?:string,plain_fallback:string}
      */
     private static function wrap_plain_message_result(string $mode, string $plain, int $post_id, array $settings): array {
         // bold_title → MAX HTML so title stays bold and line breaks remain visible.
         $bold_html = self::maybe_bold_title_html($plain, $post_id, $settings);
         if ($bold_html !== null) {
-            return [
-                'mode' => $mode,
-                'text' => $bold_html,
-                'parse_mode' => 'HTML',
-                'format' => 'html',
-                'plain_fallback' => $plain, // keep original plain for API fallback
-            ];
+            return self::wrap_html_message_result($mode, $bold_html, $plain, mb_strlen($plain, 'UTF-8'));
         }
         return [
             'mode' => $mode,
             'text' => $plain,
-            'parse_mode' => '',
             'plain_fallback' => $plain,
         ];
     }
@@ -2696,24 +2721,18 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $append = self::get_append_text_variants($settings);
 
         $plain_tail = "\n\nЭто тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
-        $html_tail  = "<br><br>Это тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
+        $html_tail  = "\n\nЭто тестовое сообщение плагина MAX Autopost. Оно специально сделано длиннее, чтобы пройти ограничение платформы MAX по минимальной длине текста. Здесь проверяются базовая отправка, форматирование, fallback в plain text и общая работа тестового режима. Если вы видите это сообщение в MAX, значит тестовая отправка работает корректно.";
 
         if ($mode === 'formatted') {
             $title_html = self::is_bold_title_enabled($settings)
                 ? '<strong>MAX Autopost: тест форматирования</strong>'
                 : 'MAX Autopost: тест форматирования';
-            $formatted = $title_html."<br><br><em>Курсивный текст</em><br><a href=\"".esc_url($url)."\">Ссылка на сайт</a><br><br>• Элемент списка 1<br>• Элемент списка 2<br><br><code>code_example()</code>".$html_tail;
+            $formatted = $title_html."\n\n<em>Курсивный текст</em>\n<a href=\"".esc_url($url)."\">Ссылка на сайт</a>\n\n• Элемент списка 1\n• Элемент списка 2\n\n<code>code_example()</code>".$html_tail;
             $formatted = self::append_html_block_for_max($formatted, (string)$append['html']);
             $plain = "MAX Autopost: тест форматирования\n\nКурсивный текст\nСсылка: ".$url."\n\n• Элемент списка 1\n• Элемент списка 2\n\ncode_example()".$plain_tail;
             $plain = self::append_plain_tail_preserving_end($plain, (string)$append['plain'], $settings);
 
-            return [
-                'mode' => 'formatted',
-                'text' => $formatted,
-                'parse_mode' => 'HTML',
-                'format' => 'html',
-                'plain_fallback' => $plain,
-            ];
+            return self::wrap_html_message_result('formatted', $formatted, $plain, mb_strlen($plain, 'UTF-8'));
         }
 
         if ($mode === 'title_only') {
@@ -2724,18 +2743,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                     '<strong>'.esc_html($title).'</strong>'.$html_tail,
                     (string)$append['html']
                 );
-                return [
-                    'mode' => 'title_only',
-                    'text' => $html,
-                    'parse_mode' => 'HTML',
-                    'format' => 'html',
-                    'plain_fallback' => $plain,
-                ];
+                return self::wrap_html_message_result('title_only', $html, $plain, mb_strlen($plain, 'UTF-8'));
             }
             return [
                 'mode' => 'title_only',
                 'text' => $plain,
-                'parse_mode' => '',
                 'plain_fallback' => $plain,
             ];
         }
@@ -2743,22 +2755,15 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $plain = self::append_plain_tail_preserving_end("MAX Autopost: тест\n\n".$url.$plain_tail, (string)$append['plain'], $settings);
         if (self::is_bold_title_enabled($settings)) {
             $html = self::append_html_block_for_max(
-                '<strong>MAX Autopost: тест</strong><br><br>'.esc_html($url).$html_tail,
+                '<strong>MAX Autopost: тест</strong>'."\n\n".esc_html($url).$html_tail,
                 (string)$append['html']
             );
-            return [
-                'mode' => $mode,
-                'text' => $html,
-                'parse_mode' => 'HTML',
-                'format' => 'html',
-                'plain_fallback' => $plain,
-            ];
+            return self::wrap_html_message_result($mode, $html, $plain, mb_strlen($plain, 'UTF-8'));
         }
 
         return [
             'mode' => $mode,
             'text' => $plain,
-            'parse_mode' => '',
             'plain_fallback' => $plain,
         ];
     }
@@ -2791,13 +2796,16 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return self::append_plain_tail_preserving_end($text, (string)$append['plain'], $settings);
     }
 
-    private static function build_formatted_text(int $post_id, array $settings): string {
+    /**
+     * @return array{text:string,is_html:bool}
+     */
+    private static function build_formatted_text(int $post_id, array $settings): array {
         $override = trim((string)get_post_meta($post_id, self::META_OVERRIDE, true));
         $source = $override !== '' ? $override : (string)get_post_field('post_content', $post_id);
         $source = str_replace(["\r\n", "\r"], "\n", $source);
         $normalized = self::normalize_wp_html_for_max($source);
-        // MAX HTML: prefer <br> spacing over <p> (often ignored by the client).
-        $normalized = self::max_html_normalize_blocks($normalized);
+        // MAX strips unsupported block/break tags; preserve their layout as literal LF.
+        $normalized = self::finalize_max_html_text($normalized);
         $title_plain = self::clean_publish_text((string)get_the_title($post_id));
         $title = esc_html($title_plain);
         $body = trim($normalized);
@@ -2809,24 +2817,34 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             $composed = $title;
         }
         if ($body !== '') {
-            $composed .= '<br><br>' . $body;
+            $composed .= "\n\n" . $body;
         }
 
         $with_fields = self::append_custom_fields_formatted($composed, $post_id, $settings);
         $append = self::get_append_text_variants($settings);
-        $base_html = $with_fields;
-        // Signature as separate HTML block (keeps <a href>, gap via <br><br>).
+        $base_html = self::finalize_max_html_text($with_fields);
+        // Signature remains a separate HTML block with a literal blank line.
         $with_fields = self::append_html_block_for_max($with_fields, (string)$append['html']);
+        $with_fields = self::finalize_max_html_text($with_fields);
 
         $user_max = self::normalize_text_limit(isset($settings['max_text_limit']) ? (int)$settings['max_text_limit'] : self::MAX_TEXT);
-        $budget = self::is_append_in_limit_enabled($settings) ? $user_max : self::MAX_TEXT;
-        $plain_len = mb_strlen(self::clean_publish_text(wp_strip_all_tags($with_fields)), 'UTF-8');
+        $base_plain = self::clean_publish_text(wp_strip_all_tags($base_html));
+        $base_len = self::max_html_visible_length($base_html);
+        $total_len = self::max_html_visible_length($with_fields);
+        $over_budget = self::is_append_in_limit_enabled($settings)
+            ? ($total_len > $user_max)
+            : ($base_len > $user_max || $total_len > self::MAX_TEXT);
 
-        if ($plain_len > $budget) {
-            $base_plain = self::clean_publish_text(wp_strip_all_tags($base_html));
-            return self::append_plain_tail_preserving_end($base_plain, (string)$append['plain'], $settings);
+        if ($over_budget) {
+            return [
+                'text' => self::append_plain_tail_preserving_end($base_plain, (string)$append['plain'], $settings),
+                'is_html' => false,
+            ];
         }
-        return $with_fields;
+        return [
+            'text' => self::finalize_max_html_text($with_fields),
+            'is_html' => true,
+        ];
     }
 
     private static function append_allowed_html_tags(): array {
@@ -2898,6 +2916,17 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             'strong' => [],
             'i' => [],
             'em' => [],
+            'del' => [],
+            's' => [],
+            'ins' => [],
+            'u' => [],
+            'mark' => [],
+            'h1' => [],
+            'h2' => [],
+            'h3' => [],
+            'h4' => [],
+            'h5' => [],
+            'h6' => [],
             'a' => ['href' => true, 'title' => true, 'target' => true, 'rel' => true],
             'code' => [],
             'pre' => [],
@@ -2960,7 +2989,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         if (empty($lines)) return $html;
-        return $html . '<br><br>' . implode('<br>', $lines);
+        return $html . "\n\n" . implode("\n", $lines);
     }
 
     private static function build_text(int $post_id, array $settings): string {
