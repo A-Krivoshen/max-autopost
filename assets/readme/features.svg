@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="title desc">
+  <title id="title">Возможности MAX Autopost</title>
+  <desc id="desc">Мультиканал, шаблоны сообщений, очередь с retry, автообновления с GitHub Releases и поддержка shared-хостинга.</desc>
+
+  <defs>
+    <linearGradient id="fbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0A0E17"/>
+      <stop offset="100%" stop-color="#12182A"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="280" rx="28" fill="url(#fbg)"/>
+  <rect x="1" y="1" width="1198" height="278" rx="27" fill="none" stroke="#2A3348" stroke-width="1"/>
+
+  <!-- Card 1 -->
+  <g transform="translate(40 36)">
+    <rect width="260" height="208" rx="18" fill="#141B2E" stroke="#2C3654" stroke-width="1"/>
+    <rect x="20" y="24" width="44" height="44" rx="12" fill="#1B2340" stroke="#6D5EF7" stroke-width="1.5"/>
+    <circle cx="34" cy="46" r="5" fill="#6D5EF7"/>
+    <circle cx="50" cy="46" r="5" fill="#6D5EF7" opacity="0.55"/>
+    <circle cx="42" cy="56" r="5" fill="#6D5EF7" opacity="0.35"/>
+    <text x="20" y="100" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="20" font-weight="700" fill="#F4F6FB">Мультиканал</text>
+    <text x="20" y="132" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">Один пост — сразу</text>
+    <text x="20" y="156" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">в несколько chat_id</text>
+    <text x="20" y="180" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">каналы и группы</text>
+  </g>
+
+  <!-- Card 2 -->
+  <g transform="translate(326 36)">
+    <rect width="260" height="208" rx="18" fill="#141B2E" stroke="#2C3654" stroke-width="1"/>
+    <rect x="20" y="24" width="44" height="44" rx="12" fill="#1B2340" stroke="#3ECF8E" stroke-width="1.5"/>
+    <rect x="30" y="36" width="24" height="4" rx="2" fill="#3ECF8E"/>
+    <rect x="30" y="44" width="18" height="4" rx="2" fill="#3ECF8E" opacity="0.6"/>
+    <rect x="30" y="52" width="22" height="4" rx="2" fill="#3ECF8E" opacity="0.35"/>
+    <text x="20" y="100" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="20" font-weight="700" fill="#F4F6FB">Шаблоны</text>
+    <text x="20" y="132" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">plain · formatted</text>
+    <text x="20" y="156" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">excerpt · title only</text>
+    <text x="20" y="180" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">жирный заголовок</text>
+  </g>
+
+  <!-- Card 3 -->
+  <g transform="translate(612 36)">
+    <rect width="260" height="208" rx="18" fill="#141B2E" stroke="#2C3654" stroke-width="1"/>
+    <rect x="20" y="24" width="44" height="44" rx="12" fill="#1B2340" stroke="#F5A524" stroke-width="1.5"/>
+    <circle cx="42" cy="46" r="11" fill="none" stroke="#F5A524" stroke-width="2.5"/>
+    <path d="M42 40 V46 H47" stroke="#F5A524" stroke-width="2" stroke-linecap="round"/>
+    <text x="20" y="100" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="20" font-weight="700" fill="#F4F6FB">Очередь</text>
+    <text x="20" y="132" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">WP-Cron worker</text>
+    <text x="20" y="156" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">retry + backoff</text>
+    <text x="20" y="180" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">логи и статусы</text>
+  </g>
+
+  <!-- Card 4 -->
+  <g transform="translate(898 36)">
+    <rect width="260" height="208" rx="18" fill="#141B2E" stroke="#2C3654" stroke-width="1"/>
+    <rect x="20" y="24" width="44" height="44" rx="12" fill="#1B2340" stroke="#5B9BD5" stroke-width="1.5"/>
+    <path d="M32 52 L42 36 L52 52 Z" fill="none" stroke="#5B9BD5" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="20" y="100" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="20" font-weight="700" fill="#F4F6FB">Обновления</text>
+    <text x="20" y="132" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">GitHub Releases</text>
+    <text x="20" y="156" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">без WP.org</text>
+    <text x="20" y="180" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#A8B0C7">CA Минцифры</text>
+  </g>
+</svg>

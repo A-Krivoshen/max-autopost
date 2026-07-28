@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">Как работает MAX Autopost</title>
+  <desc id="desc">Четыре шага: публикация в WordPress, постановка в очередь, загрузка изображения в MAX, отправка в один или несколько chat_id.</desc>
+
+  <defs>
+    <linearGradient id="wbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0A0E17"/>
+      <stop offset="100%" stop-color="#12182A"/>
+    </linearGradient>
+    <marker id="warrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#6D5EF7"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="320" rx="28" fill="url(#wbg)"/>
+  <rect x="1" y="1" width="1198" height="318" rx="27" fill="none" stroke="#2A3348" stroke-width="1"/>
+
+  <text x="56" y="48" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="18" font-weight="600" fill="#8B93A7" letter-spacing="1.2">КАК ЭТО РАБОТАЕТ</text>
+
+  <!-- Connector line -->
+  <line x1="160" y1="150" x2="1040" y2="150" stroke="#2C3654" stroke-width="2" stroke-dasharray="6 6"/>
+
+  <!-- Step 1 -->
+  <g transform="translate(56 84)">
+    <circle cx="48" cy="66" r="28" fill="#1B2340" stroke="#6D5EF7" stroke-width="2"/>
+    <text x="48" y="73" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="20" font-weight="700" fill="#F4F6FB">1</text>
+    <rect x="0" y="112" width="220" height="100" rx="16" fill="#141B2E" stroke="#2C3654" stroke-width="1"/>
+    <text x="20" y="148" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="18" font-weight="700" fill="#F4F6FB">Публикация</text>
+    <text x="20" y="176" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15" fill="#A8B0C7">Запись в WordPress</text>
+    <text x="20" y="198" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15" fill="#A8B0C7">сразу / по расписанию</text>
+  </g>
+
+  <path d="M290 150 H320" stroke="#6D5EF7" stroke-width="2" marker-end="url(#warrow)"/>
+
+  <!-- Step 2 -->
+  <g transform="translate(344 84)">
+    <circle cx="48" cy="66" r="28" fill="#1B2340" stroke="#F5A524" stroke-width="2"/>
+    <text x="48" y="73" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="20" font-weight="700" fill="#F4F6FB">2</text>
+    <rect x="0" y="112" width="220" height="100" rx="16" fill="#141B2E" stroke="#2C3654" stroke-width="1"/>
+    <text x="20" y="148" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="18" font-weight="700" fill="#F4F6FB">Очередь</text>
+    <text x="20" y="176" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15" fill="#A8B0C7">WP-Cron + lock</text>
+    <text x="20" y="198" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15" fill="#A8B0C7">retry / backoff</text>
+  </g>
+
+  <path d="M578 150 H608" stroke="#6D5EF7" stroke-width="2" marker-end="url(#warrow)"/>
+
+  <!-- Step 3 -->
+  <g transform="translate(632 84)">
+    <circle cx="48" cy="66" r="28" fill="#1B2340" stroke="#3ECF8E" stroke-width="2"/>
+    <text x="48" y="73" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="20" font-weight="700" fill="#F4F6FB">3</text>
+    <rect x="0" y="112" width="220" height="100" rx="16" fill="#141B2E" stroke="#2C3654" stroke-width="1"/>
+    <text x="20" y="148" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="18" font-weight="700" fill="#F4F6FB">Сборка</text>
+    <text x="20" y="176" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15" fill="#A8B0C7">IMAGE · TEXT · BUTTON</text>
+    <text x="20" y="198" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15" fill="#A8B0C7">upload payload MAX</text>
+  </g>
+
+  <path d="M866 150 H896" stroke="#6D5EF7" stroke-width="2" marker-end="url(#warrow)"/>
+
+  <!-- Step 4 -->
+  <g transform="translate(920 84)">
+    <circle cx="48" cy="66" r="28" fill="#6D5EF7"/>
+    <text x="48" y="73" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="20" font-weight="700" fill="#FFFFFF">4</text>
+    <rect x="0" y="112" width="220" height="100" rx="16" fill="#141B2E" stroke="#6D5EF7" stroke-width="1.5"/>
+    <text x="20" y="148" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="18" font-weight="700" fill="#F4F6FB">Доставка</text>
+    <text x="20" y="176" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15" fill="#A8B0C7">1+ chat_id / каналы</text>
+    <text x="20" y="198" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15" fill="#A8B0C7">partial_success OK</text>
+  </g>
+</svg>
