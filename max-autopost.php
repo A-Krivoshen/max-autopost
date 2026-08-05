@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.11.6
+ * Version: 1.11.7
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.6';
+    private const VERSION = '1.11.7';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -797,7 +797,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         self::settings_section('Очередь и отладка');
 
-        echo '<tr><th>Уведомления MAX</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[notify]" value="1" '.checked((int)$s['notify'],1,false).'> Отправлять с notify (пуш подписчикам)</label></td></tr>';
+        echo '<tr><th>Уведомления MAX</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[notify]" value="1" '.checked((int)$s['notify'],1,false).'> Отправлять с notify (пуш подписчикам)</label>';
+        echo '<p class="description">Для <strong>каналов</strong> MAX silent-режим (<code>notify=false</code>) API не принимает — ошибка <code>errors.send-message.channel-notify</code>. Плагин при такой ошибке сам повторит отправку без silent (с уведомлением). Для групп и диалогов silent обычно работает.</p></td></tr>';
         echo '<tr><th>Отладка</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[debug]" value="1" '.checked((int)$s['debug'],1,false).'> Расширенные логи (token/URL маскируются)</label></td></tr>';
         echo '<tr><th>После теста</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[enable_worker_after_test]" value="1" '.checked((int)($s['enable_worker_after_test'] ?? 0),1,false).'> Включить автоворкер только если тест успешен</label>';
         echo '<p class="description">По умолчанию <strong>выкл</strong>: успешный тест больше сам не запускает авторассылку очереди.</p></td></tr>';
@@ -1389,10 +1390,10 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         $test_content = self::build_test_content($s);
-        $payload = [
-            'text'   => (string)$test_content['text'],
-            'notify' => (bool)$s['notify'],
-        ];
+        $payload = self::apply_notify_to_payload(
+            ['text' => (string)$test_content['text']],
+            !empty($s['notify'])
+        );
 
         if (!empty($test_content['format'])) {
             $payload['format'] = (string)$test_content['format'];
@@ -1779,7 +1780,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             self::log('send_payload', 0, $post_id, 'format='.(string)($message['format'] ?? '').'; line_breaks='.substr_count($text, "\n").'; text='.self::short($text));
         }
 
-        $payload = ['text'=>$text,'notify'=>(bool)$s['notify']];
+        $payload = self::apply_notify_to_payload(['text' => $text], !empty($s['notify']));
         if (!empty($message['format'])) {
             $payload['format'] = (string)$message['format'];
         }
@@ -2119,6 +2120,23 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     /**
+     * Put notify flag into message payload (single place for policy).
+     */
+    private static function apply_notify_to_payload(array $payload, bool $notify): array {
+        $payload['notify'] = $notify;
+        return $payload;
+    }
+
+    /**
+     * MAX channels reject silent posts: errors.send-message.channel-notify when notify=false.
+     */
+    private static function is_channel_notify_error(string $message): bool {
+        $m = strtolower($message);
+        return str_contains($m, 'channel-notify')
+            || str_contains($m, 'errors.send-message.channel-notify');
+    }
+
+    /**
      * POST to MAX messages endpoint for a single chat.
      *
      * @return array{ok:bool,message:string,message_id:string,http:int}
@@ -2170,12 +2188,47 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     /**
+     * API call + one retry when channel rejects notify=false.
+     * Live MAX channels return errors.send-message.channel-notify for silent posts;
+     * omitting notify (API default true) is accepted.
+     *
+     * @return array{ok:bool,message:string,message_id:string,http:int,notify_channel_retry:bool}
+     */
+    private static function api_with_notify_guard(array $payload, string $chat_id, string $token, int $post_id, bool $debug): array {
+        $result = self::api($payload, $chat_id, $token, $post_id, $debug);
+        $result['notify_channel_retry'] = false;
+
+        if (!empty($result['ok'])) {
+            return $result;
+        }
+
+        $wanted_silent = array_key_exists('notify', $payload) && $payload['notify'] === false;
+        if (!$wanted_silent || !self::is_channel_notify_error((string)($result['message'] ?? ''))) {
+            return $result;
+        }
+
+        $retry_payload = $payload;
+        unset($retry_payload['notify']);
+
+        self::log(
+            'notify_channel_retry',
+            (int)($result['http'] ?? 0),
+            $post_id,
+            '[chat_id='.self::mask_chat_id_for_log($chat_id).'] channel rejected notify=false; retry without notify field (API default true)'
+        );
+
+        $retry = self::api($retry_payload, $chat_id, $token, $post_id, $debug);
+        $retry['notify_channel_retry'] = true;
+        return $retry;
+    }
+
+    /**
      * Send payload to a single target; fallback to plain text if HTML/formatted fails.
      *
-     * @return array{ok:bool,message:string,message_id:string,http:int,fallback_used:bool,format:string}
+     * @return array{ok:bool,message:string,message_id:string,http:int,fallback_used:bool,format:string,notify_channel_retry:bool}
      */
     private static function send_to_target_with_fallback(array $payload, string $chat_id, string $token, int $post_id, bool $debug, string $format_mode, string $plain_fallback): array {
-        $primary = self::api($payload, $chat_id, $token, $post_id, $debug);
+        $primary = self::api_with_notify_guard($payload, $chat_id, $token, $post_id, $debug);
         $primary['fallback_used'] = false;
         $primary['format'] = (string)($payload['format'] ?? '');
 
@@ -2187,10 +2240,14 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             return $primary;
         }
 
-        $fallback_payload = [
-            'text'   => $plain_fallback !== '' ? $plain_fallback : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings()),
-            'notify' => (bool)($payload['notify'] ?? true),
-        ];
+        $fallback_payload = self::apply_notify_to_payload(
+            [
+                'text' => $plain_fallback !== ''
+                    ? $plain_fallback
+                    : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings()),
+            ],
+            array_key_exists('notify', $payload) ? (bool)$payload['notify'] : true
+        );
 
         self::log(
             'fallback',
@@ -2199,7 +2256,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             '[chat_id='.self::mask_chat_id_for_log($chat_id).'] html/formatted failed, fallback to plain text without attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
         );
 
-        $retry = self::api($fallback_payload, $chat_id, $token, $post_id, $debug);
+        $retry = self::api_with_notify_guard($fallback_payload, $chat_id, $token, $post_id, $debug);
         $retry['fallback_used'] = true;
         $retry['format'] = '';
         return $retry;
@@ -2564,7 +2621,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         if ($success === 0) {
-            return ['status'=>'error', 'message'=>'Не удалось отправить ни в один target (0/'.$total.').', 'results'=>$results];
+            return [
+                'status'  => 'error',
+                'message' => self::friendly_dispatch_failure_message($results, $total),
+                'results' => $results,
+            ];
         }
 
         if ($success < $total) {
@@ -2572,6 +2633,39 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         }
 
         return ['status'=>'success', 'message'=>'Успешно отправлено во все target: '.$success.'/'.$total.'.', 'results'=>$results];
+    }
+
+    /**
+     * Human-readable failure when every target failed (surface channel-notify clearly).
+     *
+     * @param array<int,array{chat_id?:string,status?:string,message_id?:string,error?:string}> $results
+     */
+    private static function friendly_dispatch_failure_message(array $results, int $total): string {
+        $base = 'Не удалось отправить ни в один target (0/'.$total.').';
+
+        foreach ($results as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $err = (string)($row['error'] ?? '');
+            if (self::is_channel_notify_error($err)) {
+                return $base.' Причина: канал MAX отклонил silent-режим (notify=false, errors.send-message.channel-notify). '
+                    .'Включите «Отправлять с notify (пуш подписчикам)» и повторите. '
+                    .'Также проверьте, что бот — администратор канала с правом публиковать сообщения.';
+            }
+        }
+
+        foreach ($results as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $err = trim((string)($row['error'] ?? ''));
+            if ($err !== '') {
+                return $base.' '.self::short($err);
+            }
+        }
+
+        return $base;
     }
 
     private static function log_target_result(int $post_id, array $result): void {

@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.11.6
+Stable tag: 1.11.7
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,11 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.11.7 =
+* Fix: каналы MAX отклоняют silent (`notify=false`) с `errors.send-message.channel-notify` — отправка падала с 0/1 target.
+* Auto-retry: при channel-notify плагин повторяет запрос без поля notify (API default = уведомлять).
+* UX: подсказка у галочки notify + понятное сообщение об ошибке в notice/логах.
+
 = 1.11.6 =
 * Fix MAX HTML: заголовок, URL, текст записи и подпись больше не склеиваются при удалении неподдерживаемых `<br>` / `<p>`.
 * Все HTML-разрывы преобразуются в реальные LF; исправлены тест, plain+bold, excerpt, title-only, formatted и custom fields.

@@ -13,6 +13,22 @@
 
 ---
 
+## Что нового в 1.11.7
+
+<p align="center">
+  <img src="./assets/readme/release-1.11.7.svg" width="100%" alt="1.11.7: auto-retry при channel-notify, когда канал отклоняет notify=false">
+</p>
+
+| | |
+| --- | --- |
+| **Проблема** | Каналы MAX отклоняют silent (`notify=false`) с `errors.send-message.channel-notify` → тест «0/1 target». |
+| **Фикс** | Авто-retry: один повтор **без** поля `notify` (дефолт API = уведомлять). |
+| **UX** | Подсказка у галочки notify + понятный текст ошибки в notice. |
+
+Полная история: **[CHANGELOG.md](./CHANGELOG.md)** · релиз: **[v1.11.7](https://github.com/A-Krivoshen/max-autopost/releases/tag/v1.11.7)**.
+
+---
+
 ## Возможности
 
 <p align="center">
@@ -24,7 +40,7 @@
 | **Мультиканал** | Один пост — сразу в несколько `chat_id` (каналы и группы). Ошибка в одном чате не останавливает остальные. |
 | **Форматы текста** | `plain_text`, `formatted`, `excerpt_plain`, `title_only`; жирный заголовок; подпись и кнопки «Читать» / «Подписаться». |
 | **Очередь** | WP-Cron worker, retry с backoff, lock, фильтры статусов, bulk-действия, безопасный старт после установки. |
-| **Надёжность** | Корректный upload image (полный payload step2), fallback formatted→plain, soft-fail картинки → text-only. |
+| **Надёжность** | Корректный upload image (полный payload step2), fallback formatted→plain, soft-fail картинки → text-only, guard `channel-notify`. |
 | **Обновления** | Автообновление из GitHub Releases (без WP.org). |
 | **Shared-хостинг** | CA Минцифры дописывается к системному/WP bundle — HTTPS к MAX и CDN работает на типичных тарифах. |
 
@@ -89,6 +105,7 @@ define('KRV_MAX_CHAT_ID', 'your-chat-id');
 - Длина текста настраивается (200–3900 символов, потолок API 4000).
 - Режим `formatted` нормализует WordPress HTML (whitelist тегов MAX); при ошибке API — fallback в plain.
 - Источник картинки: из записи, только из записи, или всегда изображение сайта.
+- Для **каналов** silent (`notify=false`) API не принимает — плагин сам повторяет отправку с уведомлением.
 
 ---
 
@@ -96,17 +113,6 @@ define('KRV_MAX_CHAT_ID', 'your-chat-id');
 
 Плагин обновляется через **GitHub Releases** (библиотека plugin-update-checker).  
 Отдельная установка с WP.org не нужна — достаточно скачать ZIP один раз.
-
----
-
-## Что нового в 1.11.6
-
-- Исправлено склеивание жирного заголовка, URL, текста записи и подписи в MAX HTML.
-- Неподдерживаемые MAX-теги `<br>` / `<p>` преобразуются в реальные переводы строк перед отправкой.
-- Payload: документированный `format=html` (без `parse_mode`); сохранённые подписи с `<br>` продолжают работать.
-- Поддерживаемые MAX-теги и содержимое `<pre>` сохраняются; лимит сообщения проверяется до отправки.
-
-Полная история: **[CHANGELOG.md](./CHANGELOG.md)**.
 
 ---
 

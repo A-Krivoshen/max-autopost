@@ -1,4 +1,10 @@
 # Changelog
+## 1.11.7
+- Fix: каналы MAX отклоняют silent-отправку (`notify=false`) с ошибкой `errors.send-message.channel-notify` — тест/посты падали с «0/1 target».
+- Auto-retry: при `channel-notify` и `notify=false` плагин один раз повторяет запрос **без** поля `notify` (дефолт API = уведомлять).
+- UX: подсказка у галочки «Отправлять с notify» про ограничение каналов.
+- UX: при полном провале dispatch notice расшифровывает `channel-notify` человекочитаемым текстом.
+- Единая сборка `notify` в payload (`apply_notify_to_payload`); guard в test, live send и plain-fallback.
 ## 1.11.6
 - Fix MAX HTML: неподдерживаемые `<br>` / `<p>` больше не склеивают заголовок, URL, тело записи и подпись. Перед отправкой они преобразуются в реальные переводы строк LF.
 - Исправление применяется к тестовой отправке, `plain_text` с жирным заголовком, `excerpt_plain`, `title_only`, `formatted`, дополнительным полям и «Тексту после записи».
