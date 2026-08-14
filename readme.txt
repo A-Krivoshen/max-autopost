@@ -4,7 +4,7 @@ Tags: max, autopost, wordpress, bot, cron
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.11.7
+Stable tag: 1.11.8
 License: MIT
 License URI: https://opensource.org/license/mit/
 
@@ -31,6 +31,11 @@ License URI: https://opensource.org/license/mit/
 4) Нажмите “Отправить тест”
 
 == Changelog ==
+= 1.11.8 =
+* Fix: process_queue больше не подхватывает sticky_posts (ignore_sticky_posts + guard status=queued).
+* Perf: dedupe по sent_hash выполняется до upload картинки.
+* Append text: разрешены <b>/<strong> (в т.ч. внутри <a>).
+
 = 1.11.7 =
 * Fix: каналы MAX отклоняют silent (`notify=false`) с `errors.send-message.channel-notify` — отправка падала с 0/1 target.
 * Auto-retry: при channel-notify плагин повторяет запрос без поля notify (API default = уведомлять).

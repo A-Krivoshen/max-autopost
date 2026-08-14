@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.11.7
+ * Version: 1.11.8
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.7';
+    private const VERSION = '1.11.8';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -771,7 +771,7 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
 
         echo '<tr><th>Текст после записи</th><td>';
         echo '<textarea name="'.esc_attr(self::OPT).'[post_append_text]" class="large-text code" rows="4" placeholder="<a href=&quot;https://max.ru/...&quot;>Подписаться на канал</a>">'.esc_textarea((string)$s['post_append_text']).'</textarea>';
-        echo '<p class="description">Дополнительный текст в конце. В formatted: whitelist <code>a</code>, <code>br</code>. В plain/excerpt — plain (ссылки как текст + URL).</p>';
+        echo '<p class="description">Дополнительный текст в конце. В formatted: whitelist <code>a</code>, <code>br</code>, <code>b</code>, <code>strong</code>. В plain/excerpt — plain (ссылки как текст + URL).</p>';
         echo '<label style="display:block;margin-top:8px;"><input type="checkbox" name="'.esc_attr(self::OPT).'[append_in_limit]" value="1" '.checked((int)($s['append_in_limit'] ?? 1), 1, false).'> Учитывать «Текст после записи» в общем лимите сообщения</label>';
         echo '<p class="description"><strong>Вкл:</strong> «Длина текста» = лимит всего сообщения; основной анонс ужимается под подпись. <strong>Выкл:</strong> лимит только на основной текст, подпись добавляется сверху (итог может быть больше, жёсткий потолок '.esc_html((string)self::MAX_TEXT).').</p>';
         echo '</td></tr>';
@@ -1303,6 +1303,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                 'no_found_rows'=>true,
                 'update_post_meta_cache'=>false,
                 'update_post_term_cache'=>false,
+                'ignore_sticky_posts'=>true,
                 'meta_query'=>[
                     ['key'=>self::META_STATUS,'value'=>'queued'],
                     [
@@ -1317,6 +1318,13 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
             foreach ($q->posts as $p) {
                 $post_id = (int)$p->ID;
+                $qstatus = (string)get_post_meta($post_id, self::META_STATUS, true);
+                if ($qstatus !== 'queued') {
+                    if (!empty(self::get_settings()['debug'])) {
+                        self::log('skip_not_queued', 0, $post_id, 'status='.$qstatus);
+                    }
+                    continue;
+                }
                 $res = self::send($post_id);
                 update_post_meta($post_id, self::META_TARGET_RESULTS, $res['results']);
 
@@ -1775,27 +1783,57 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $text = (string)$message['text'];
         $url  = get_permalink($post_id);
         $append = self::get_append_text_variants($s);
-        if (!empty($s['debug'])) {
-            self::log('send_mode', 0, $post_id, 'mode='.(string)$message['mode'].'; format='.(string)($message['format'] ?? '').'; append='.(int)($append['raw'] !== ''));
-            self::log('send_payload', 0, $post_id, 'format='.(string)($message['format'] ?? '').'; line_breaks='.substr_count($text, "\n").'; text='.self::short($text));
-        }
 
         $payload = self::apply_notify_to_payload(['text' => $text], !empty($s['notify']));
         if (!empty($message['format'])) {
             $payload['format'] = (string)$message['format'];
         }
+
+        $image_file = null;
+        if (!empty($s['include_image']) && function_exists('curl_init')) {
+            $image_file = self::resolve_image_file($post_id, $s);
+        }
+
+        // Dedupe before image upload (stable hash w/o upload payload)
+        $sig = [
+            'text'=>$payload['text'],
+            'format'=>(string)($payload['format'] ?? ''),
+            'notify'=>$payload['notify'],
+            'has_image'=>(int)!empty($image_file),
+            'has_button'=>(int)!empty($s['add_button']),
+            'button_text'=>(string)$s['button_text'],
+            'url'=>$url,
+            'has_subscribe_button'=>(int)!empty($s['add_subscribe_button']),
+            'subscribe_button_text'=>(string)($s['subscribe_button_text'] ?? ''),
+            'subscribe_button_url'=>(string)($s['subscribe_button_url'] ?? ''),
+            'targets'=>$targets,
+            'post_modified_gmt'=>get_post_modified_time('U', true, $post_id),
+        ];
+        $hash = hash('sha256', wp_json_encode($sig, JSON_UNESCAPED_UNICODE));
+        $prev = (string)get_post_meta($post_id,self::META_SENTHASH,true);
+        if ($prev && hash_equals($prev,$hash)) {
+            if (!empty($s['debug'])) {
+                self::log('dedupe_skip', 0, $post_id, 'already sent (hash match)');
+            }
+            $prev_results = get_post_meta($post_id, self::META_TARGET_RESULTS, true);
+            $prev_results = is_array($prev_results) ? $prev_results : [];
+            return ['status'=>'success', 'message'=>'Уже отправлено ранее (dedupe).', 'results'=>$prev_results];
+        }
+
+        if (!empty($s['debug'])) {
+            self::log('send_mode', 0, $post_id, 'mode='.(string)$message['mode'].'; format='.(string)($message['format'] ?? '').'; append='.(int)($append['raw'] !== ''));
+            self::log('send_payload', 0, $post_id, 'format='.(string)($payload['format'] ?? '').'; line_breaks='.substr_count($text, "\n").'; text='.self::short($text));
+        }
+
         $attachments = [];
 
         // IMAGE first — soft-fail: SSL/CDN glitches must not block the whole send.
-        if (!empty($s['include_image']) && function_exists('curl_init')) {
-            $file = self::resolve_image_file($post_id, $s);
-            if ($file) {
-                $up = self::upload($file, $token, $post_id);
-                if ($up === false) {
-                    self::log('send_image_skip', 0, $post_id, 'Upload failed, sending text-only (see upload_* logs)');
-                } else {
-                    $attachments[] = ['type'=>'image','payload'=>$up]; // IMPORTANT: full JSON
-                }
+        if ($image_file) {
+            $up = self::upload($image_file, $token, $post_id);
+            if ($up === false) {
+                self::log('send_image_skip', 0, $post_id, 'Upload failed, sending text-only (see upload_* logs)');
+            } else {
+                $attachments[] = ['type'=>'image','payload'=>$up]; // IMPORTANT: full JSON
             }
         }
 
@@ -1813,29 +1851,6 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         if (!empty($attachments)) $payload['attachments'] = $attachments;
         if (!empty($s['debug'])) {
             self::log('send_attachments', 0, $post_id, 'attachments_count='.(int)count($attachments).'; has_image='.(int)(isset($attachments[0]) && ($attachments[0]['type'] ?? '') === 'image').'; button_count='.(int)count($buttons));
-        }
-
-        // Dedupe (stable hash w/o upload payload)
-        $sig = [
-            'text'=>$payload['text'],
-            'format'=>(string)($payload['format'] ?? ''),
-            'notify'=>$payload['notify'],
-            'has_image'=>(int)(isset($attachments[0]) && $attachments[0]['type']==='image'),
-            'has_button'=>(int)!empty($s['add_button']),
-            'button_text'=>(string)$s['button_text'],
-            'url'=>$url,
-            'has_subscribe_button'=>(int)!empty($s['add_subscribe_button']),
-            'subscribe_button_text'=>(string)($s['subscribe_button_text'] ?? ''),
-            'subscribe_button_url'=>(string)($s['subscribe_button_url'] ?? ''),
-            'targets'=>$targets,
-            'post_modified_gmt'=>get_post_modified_time('U', true, $post_id),
-        ];
-        $hash = hash('sha256', wp_json_encode($sig, JSON_UNESCAPED_UNICODE));
-        $prev = (string)get_post_meta($post_id,self::META_SENTHASH,true);
-        if ($prev && hash_equals($prev,$hash)) {
-            $prev_results = get_post_meta($post_id, self::META_TARGET_RESULTS, true);
-            $prev_results = is_array($prev_results) ? $prev_results : [];
-            return ['status'=>'success', 'message'=>'Уже отправлено ранее (dedupe).', 'results'=>$prev_results];
         }
 
         $dispatch = self::dispatch_to_targets(
@@ -2411,8 +2426,12 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         // Ensure links are safe absolute http(s) only; keep label text safe.
         $html = preg_replace_callback('/<a\b([^>]*)>(.*?)<\/a>/is', static function ($m) {
             $attrs = (string)($m[1] ?? '');
-            // Allow only text and saved line breaks inside the link label.
-            $inner = (string)wp_kses((string)($m[2] ?? ''), ['br' => []]);
+            // Allow only text, line breaks and bold inside the link label.
+            $inner = (string)wp_kses((string)($m[2] ?? ''), [
+                'br' => [],
+                'b' => [],
+                'strong' => [],
+            ]);
             $url = '';
             if (preg_match('/\bhref\s*=\s*(["\'])(.*?)\1/i', $attrs, $hm)) {
                 $url = (string)$hm[2];
@@ -2945,6 +2964,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return [
             'a' => ['href' => true, 'title' => true, 'target' => true, 'rel' => true],
             'br' => [],
+            'b' => [],
+            'strong' => [],
         ];
     }
 
