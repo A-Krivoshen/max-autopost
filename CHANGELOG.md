@@ -9,3 +9,262 @@
 - Fix: process_queue больше не подхватывает sticky_posts (ignore_sticky_posts + guard status=queued)
 - Perf: dedupe по sent_hash выполняется до upload картинки
 - Append text: разрешены <b>/<strong> (в т.ч. внутри <a>)
+## 1.11.7
+- Fix: каналы MAX отклоняют silent-отправку (`notify=false`) с ошибкой `errors.send-message.channel-notify` — тест/посты падали с «0/1 target».
+- Auto-retry: при `channel-notify` и `notify=false` плагин один раз повторяет запрос **без** поля `notify` (дефолт API = уведомлять).
+- UX: подсказка у галочки «Отправлять с notify» про ограничение каналов.
+- UX: при полном провале dispatch notice расшифровывает `channel-notify` человекочитаемым текстом.
+- Единая сборка `notify` в payload (`apply_notify_to_payload`); guard в test, live send и plain-fallback.
+## 1.11.6
+- Fix MAX HTML: неподдерживаемые `<br>` / `<p>` больше не склеивают заголовок, URL, тело записи и подпись. Перед отправкой они преобразуются в реальные переводы строк LF.
+- Исправление применяется к тестовой отправке, `plain_text` с жирным заголовком, `excerpt_plain`, `title_only`, `formatted`, дополнительным полям и «Тексту после записи».
+- Сохранена совместимость с уже записанными подписями, содержащими `<br>`; миграция настроек не требуется.
+- Payload приведён к документированному контракту MAX: используется `format=html`, недокументированный `parse_mode` удалён.
+- HTML-whitelist синхронизирован с документацией MAX; пробелы внутри `<pre>` сохраняются, а лимит `formatted` снова учитывает пользовательскую настройку и жёсткий потолок API.
+- Debug-логи `test_payload` / `send_payload` теперь содержат `line_breaks` для диагностики итогового сообщения.
+## 1.11.5
+- **Critical fix:** вложенная `<form>` в метабоксе ломала «Опубликовать» (hidden `action=krv_max_send_now` перебивал WP `action=editpost`). Симптомы: редирект в список записей, «содержимое будет заменено…», галочка «Не отправлять» не помогает. Кнопка «Отправить сейчас» → nonce-ссылка без nested form.
+- Fix: `transition_post_status` раньше `save_post` — галочка «Не отправлять» читается из `$_POST` в том же запросе.
+- Fix SSL shared-хостинг: CA Минцифры **дописывается** к системному/WP CA (не подменяет). Только russian-pem ломал upload CDN (HARICA).
+- Combined CA кэш в `uploads/krv-max-autopost/`; `http_request_args` + `http_api_curl` 9999.
+- Fix картинок: ошибка upload → text-only + лог `send_image_skip` (не валит всю отправку).
+## 1.11.4
+- Security/Performance: встроенный CA-bundle Минцифры (`assets/certs/russian-trusted-ca.pem`) для shared-хостингов без системного сертификата.
+- Performance: кэширование счётчиков очереди (10 сек) и поиска Chat ID (5 мин) — меньше запросов к БД и API.
+- UX: блок «Нравится плагин?» с ссылкой на отзыв Яндекс.Карты + другие услуги на всех вкладках админки.
+- UX: подтверждение перед тестовой отправкой; подсказка про гарантированный отступ при жирном заголовке.
+- Refactor: исправлены отступы методов после патчей; `_get_cron_array()` заменён на штатный API.
+- Fix: `quarantine_stale_queue()` ограничен 1000 постами (защита от OOM при обновлении).
+- Fix: `uninstall.php` теперь удаляет все опции и транзиенты плагина.
+## 1.11.3
+- Fix: «Текст после записи» / подпись с `<a href>` больше не сливается и не теряет ссылку при жирном заголовке.
+- Подпись в HTML-режиме цепляется отдельным блоком `<br><br>` + реальный `<a href>` (не через esc_html plain).
+- `prepare_append_html_for_max` / `append_html_block_for_max` / strip plain-append с хвоста.
+- Исправлен `clean_publish_text` (нормализация `\r\n`).
+## 1.11.2
+- Fix: при «Жирный заголовок» заголовок и текст больше не сливаются в одну строку.
+- HTML для MAX: разделитель title/body всегда `<br><br>`; body `\n` → `<br>` / `\n\n` → `<br><br>`.
+- `maybe_bold_title_html` переписан (mb-safe отрезание title); `plain_text_to_max_html` + `max_html_normalize_blocks` (`<p>` → br).
+- plain_text / excerpt / title_only / formatted: отступ сохраняется; plain_fallback без изменений.
+## 1.11.1
+- Security/UX hardening после аудита.
+- Token: пустое поле = не менять; предупреждение что ключ в БД менее безопасен → `wp-config.php` `KRV_MAX_TOKEN`.
+- `register_setting` capability `manage_options`.
+- SSRF guard для `upload_url` (https + allowlist доменов MAX/CDN).
+- cURL upload: только HTTPS protocols.
+- Тест **не** включает автоворкер по умолчанию (`enable_worker_after_test`).
+- Счётчик целей (chat ID) + предупреждение multi-chat.
+- Confirm + оценка N×M; bulk/requeue/errors **пачками по 50**.
+- Не копить single-event cron; clear hook на upgrade/deactivate.
+- Notice после обновления; очистка логов; статус MAX в метабоксе.
+- POST-формы для send/queue в админке; RU-подписи; секции настроек; реклама помечена.
+## 1.11.0
+- API MAX: `platform-api2.max.ru` (миграция с `platform-api.max.ru`, дедлайн 19.07.2026).
+- Настройка **«Учитывать Текст после записи в общем лимите»** (`append_in_limit`, по умолчанию вкл).
+- Справка в UI: длина подписи / бюджет основного текста / итого.
+- Режим формата **`title_only`** — только заголовок (+ подпись, картинка, кнопки).
+- Жирный заголовок (`bold_title`) работает и в `title_only`.
+- Фильтр `krv_max_api_host`; заметка про сертификат Минцифры на хостинге.
+## 1.10.12
+- Миграция API MAX: `platform-api.max.ru` → `platform-api2.max.ru` (требование MAX до 19.07.2026).
+- Единый helper `api_base()` / `api_url()`; фильтр `krv_max_api_host` для переопределения хоста.
+- В справке плагина: заметка про сертификат Минцифры на стороне хостинга.
+## 1.10.11
+- Добавлена настройка «Выделять заголовок поста жирным» (`bold_title`, по умолчанию включена).
+- В режимах `plain_text` и `excerpt_plain` при включённой опции заголовок уходит как `<strong>` через `format=html`, тело остаётся plain.
+- В режиме `formatted` жирный заголовок можно отключить той же галочкой.
+- Fallback на plain text теперь срабатывает и для «лёгкого» HTML (bold title), не только для полного `formatted`.
+## 1.10.10
+
+- Добавлена кнопка «Переочередить опубликованные с текущими настройками».
+- Переочередь очищает старый sent_hash, ошибки и результаты отправки.
+- Удалён внешний wpwidget.ru JavaScript из админки.
+- Партнёрский блок заменён на статичный FirstVDS-блок без внешнего JS.
+- Добавлены per-post capability checks для ручной отправки и очереди.
+- chat_id теперь маскируется в логах.
+- Upload-логи очищаются от token/url/authorization-подобных значений.
+- subscribe_button_url ограничен http/https.
+- token очищается от CR/LF/control chars.
+## 1.10.9
+- fixed plain/excerpt text limiting so `post_append_text` is preserved at the end by trimming the main text first
+## 1.10.8
+- fixed plain/excerpt append text conversion: links from `post_append_text` now keep visible URL text instead of being stripped with HTML tags
+## 1.10.7
+- added separate subscribe button settings: `add_subscribe_button`, `subscribe_button_text`, `subscribe_button_url`
+- inline keyboard now supports one or two link buttons ("Читать" and/or "Подписаться")
+- test send now can include inline keyboard even without image attachment
+- added `post_append_text` setting (safe append text after the main message)
+- append text is sanitized via whitelist (`a`, `br`) for formatted mode and converted to plain text for plain/excerpt modes
+- formatted mode payload now includes `format=html` (with existing plain fallback behavior preserved)
+- improved formatted debug logging (`mode`, `format`, append presence, fallback info)
+- fixed `post_append_text` sanitization bug: HTML link no longer stripped to plain text in `formatted` mode
+## 1.10.6
+- fixed test image payload validation
+- fixed formatted fallback to plain text without attachments
+- improved test send handling for invalid media payload
+## 1.10.5
+- fixed test message length for MAX
+- test content is now long enough for text-only and formatted test sends
+## 1.10.4
+- fixed test send without image
+- test message now falls back to text-only when no valid image payload is available
+## 1.10.3
+- test release for GitHub updater verification
+## 1.10.2
+- Release hardening for `message_format` flow.
+- Verified formatted mode compatibility with multi-target, image attachments, and "Читать" button payload.
+- Confirmed formatted->plain fallback behavior and logging on API send errors.
+- Prepared release-ready ZIP structure requirements (plugin root folder remains `max-autopost`).
+
+## 1.10.0
+- Added message format setting with modes: `plain_text`, `formatted`, `excerpt_plain`.
+- Implemented safe formatted-content pipeline for WordPress HTML (Gutenberg cleanup + allowed tags whitelist).
+- Added readable list conversion for formatted mode and safer paragraph/line-break normalization.
+- Added formatted-send fallback to plain text on API error, with explicit fallback logging.
+- Updated test-send to respect selected format and include formatting sample in formatted mode.
+- Preserved multi-target delivery, queue/manual flows, image/button sending and GitHub updater compatibility.
+
+## 1.9.2
+- Moved GitHub update-checker initialization to a dedicated include class (`includes/class-krv-max-github-updater.php`).
+- Added vendor placeholder doc for updater library path (`lib/plugin-update-checker/README.md`).
+- Kept all update safeguards (missing file/class fallback, no-fatal behavior, one-time init, ZIP release assets filter).
+
+## 1.9.1
+- Added GitHub-based plugin updates via YahnisElsts/plugin-update-checker.
+- Added `Update URI` metadata to the plugin header for external update compatibility.
+- Added safe update-checker bootstrap with file/class guards and one-time initialization.
+- Enabled GitHub Release assets support with ZIP asset filter (`/\.zip($|[?&#])/i`).
+- If updater library is missing, plugin continues to work normally without auto-update checks.
+
+## 1.9.0
+- Added multi-target delivery for MAX: one post can now be sent to multiple chat IDs (channels and/or group chats).
+- Kept backward compatibility: existing single `chat_id` setting remains the primary target and continues to work unchanged.
+- Added `additional_chat_ids` setting (one value per line) with trim/sanitize, duplicate removal, and empty-line filtering.
+- Refactored dispatcher flow to iterate targets sequentially and continue after per-target failures.
+- Added aggregate delivery outcomes: `success`, `partial_success`, `error`.
+- Added per-target delivery result meta (`_krv_max_target_results`) with `chat_id`, `status`, `message_id`, `error`.
+- Updated queue UI with target result summary plus `partial_success` filter/counter.
+- Updated test-send action to send to all configured targets.
+- Updated Help tab text for channel/group/multi-target usage and chat ID list format.
+
+## 1.8.9
+- Added support for `define('KRV_MAX_CHAT_ID', '...')` so Chat ID can be stored in `wp-config.php` instead of the database.
+- Reused the new helper in test-send and live post sending to ensure one consistent Chat ID source.
+
+## 1.8.8
+- Added queue status counters (all/queued/error/sent) on Queue tab.
+- Counter cards are clickable and switch Queue filter directly.
+
+## 1.8.7
+- Added queue status filters on Queue tab: all / queued / error / sent.
+- Improves admin triage for pending and failed items.
+
+## 1.8.6
+- Added explicit worker status indicator (OFF/ON) on Queue tab.
+- Added dedicated controls to manually enable/disable auto-worker.
+
+## 1.8.5
+- Added outgoing text cleanup to remove HTML entities/non-printable artifacts (including `&nbsp;`).
+- Successful test-send now arms the worker so scheduled posts can auto-send again.
+
+## 1.8.4
+- Added “Оставить звезду на GitHub” button to the Help tab.
+- Button opens the GitHub repository page where users can click Star.
+
+## 1.8.3
+- Manual queue run now processes exactly one item per click.
+- Manual run no longer arms persistent automatic worker mode.
+
+## 1.8.2
+- Disabled automatic worker arming on settings save (token/chat id).
+- Queue sending now starts only on explicit manual queue run, preventing immediate old-message bursts after entering credentials.
+
+## 1.8.1
+- Added safe-start behavior: queue worker is disabled after install/upgrade until valid token/chat id are saved or queue is manually started.
+- Prevents immediate burst auto-sends right after fresh install.
+
+## 1.8.0
+- Added install-stamp queue isolation: worker now sends only items queued during the current plugin install/upgrade cycle.
+- Legacy queued items from previous installs/upgrades are quarantined and cannot auto-send after entering token/chat id.
+
+## 1.7.9
+- Added stale-queue quarantine on install/upgrade: legacy queued items are moved to `error` and are not auto-sent.
+- Prevents accidental sending of old published posts right after entering token/chat id.
+
+## 1.7.8
+- Restored custom post type support reliability: row/bulk hooks are now registered on `init` after CPT registration.
+- Removed request-local post-type list caching that could hide CPTs in settings/hook registration.
+
+## 1.7.7
+- Refactored repeated normalization logic into dedicated helpers for text limit and image source mode.
+- Optimized queue worker query (`no_found_rows`, reduced cache work) and guaranteed lock release via `finally`.
+- Added request-local caching for available/supported post types.
+
+## 1.7.6
+- Added image source mode setting: post image first with site fallback, post-only (no fallback), or site-only.
+- Prevented automatic site-image substitution when post-only mode is selected.
+
+## 1.7.5
+- Removed remaining screenshot-oriented guidance from the Help tab flow; help content is text-only with Chat ID discovery table.
+
+## 1.7.4
+- Improved text truncation at character limit: now appends an ellipsis instead of hard cut-off.
+- Switched length/truncation checks to explicit UTF-8 handling for safer multilingual text processing.
+
+## 1.7.3
+- Reduced automatic queue batch size from 5 to 1 to prevent burst sends.
+- Made excerpt length dynamic based on configured text limit for more predictable output size.
+
+## 1.7.2
+- Removed Help tab screenshots completely; kept text instructions and Chat ID discovery only.
+
+## 1.7.1
+- Replaced Help tab screenshots with updated visuals matching user-provided references.
+
+## 1.7.0
+- Added configurable MAX post text length limit in admin settings (200..3900).
+
+## 1.6.2
+- Removed the first Help screenshot as requested; kept only two guidance images.
+
+## 1.6.1
+- Added embedded visual guide screenshots to the Help tab for token, bot/group setup, and Chat ID discovery.
+- Included local help assets shown directly in admin panel.
+
+## 1.6.0
+- Added dedicated "Help" admin tab with guided setup steps for bot creation, group setup, and Chat ID discovery.
+- Added token-based chat discovery to display available Chat IDs directly in admin panel.
+
+## 1.5.2
+- Added upgrade queue cutoff to prevent immediate flood of old queued items after plugin update.
+- Requeueing now refreshes queue metadata and safely re-enables sending.
+
+## 1.5.1
+- Reworked checkboxes to select post types (including custom post types) instead of meta fields.
+- Separated support contact block from referral banner in admin UI.
+
+## 1.5.0
+- Added checkbox-based custom field selection in admin settings.
+- Embedded referral banner widget and support contact block in admin page.
+
+## 1.4.1
+- Improved queue auto-start reliability by triggering worker immediately after queueing.
+- Added explicit handling for scheduled publications (`future -> publish`).
+
+## 1.4.0
+- Improved admin queue UI with quick actions (send now / queue now).
+- Added admin action to queue all published content.
+- Added support for public post types beyond posts (metabox, queue, row/bulk actions).
+
+## 1.3.0
+- Added support for publishing selected custom fields in the post text.
+- Added admin settings for custom field mapping (`meta_key|Label`).
+
+## 1.2.1
+- Fix: upload step2 payload can be nested (e.g. {"photos":{...}}). Accept and pass full JSON to image.payload.
+
+## 1.2.0
+- Added inline button (inline_keyboard).
+- Queue worker: cron lock + batch limit + retry/backoff.
+- Metabox: disable autopost, override text, send now.
+- Logs.
