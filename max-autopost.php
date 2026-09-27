@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MAX Autopost (Free)
- * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), корректный upload image (полный payload), очередь WP-Cron, retry, логи.
- * Version: 1.11.8
+ * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), image.payload = {token}/{url}, очередь WP-Cron, retry, логи.
+ * Version: 1.11.9
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.8';
+    private const VERSION = '1.11.9';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -766,7 +766,7 @@ chat_abcd123">'.esc_textarea((string)$s['additional_chat_ids']).'</textarea>';
         echo '</select>';
         echo '<p class="description">plain text — совместимый режим; formatted — HTML; excerpt plain — короткий анонс; <strong>только заголовок</strong> — title + картинка + подпись + кнопки (без текста записи).</p>';
         echo '<label style="display:block;margin-top:8px;"><input type="checkbox" name="'.esc_attr(self::OPT).'[bold_title]" value="1" '.checked((int)($s['bold_title'] ?? 1), 1, false).'> Выделять заголовок поста <strong>жирным</strong></label>';
-        echo '<p class="description">В formatted/plain/excerpt/title_only при включённой галочке заголовок уходит как <code>&lt;strong&gt;</code> (format=html) с гарантированным отступом от основного текста.</p>';
+        echo '<p class="description">В formatted/plain/excerpt/title_only при включённой галочке заголовок уходит как <code>&lt;b&gt;</code> (format=html) с гарантированным отступом от основного текста.</p>';
         echo '</td></tr>';
 
         echo '<tr><th>Текст после записи</th><td>';
@@ -1079,11 +1079,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         echo '<li>В разделе <strong>Интеграция</strong> получите токен. Безопаснее: <code>define(\'KRV_MAX_TOKEN\', \'...\');</code> в <code>wp-config.php</code>. В админке token хранится в БД — удобно, но менее безопасно при утечке бэкапа.</li>';
         echo '<li>Добавьте бота в нужную группу/канал в MAX, где будут публикации.</li>';
         echo '<li>Отправьте любое сообщение в эту группу (чтобы чат появился в списке API).</li>';
-        echo '<li>Ниже нажмите кнопку поиска — плагин попробует показать доступные Chat ID.</li>';
+        echo '<li>Chat ID скопируйте из клиента MAX (канал/группа → сведения). У каналов ID обычно отрицательный.</li>';
         echo '</ol>';
         echo '<p><strong>Теперь плагин поддерживает отправку:</strong> в канал, в группу/групповой чат и одновременно в несколько каналов/групп.</p>';
         echo '<p><strong>Формат дополнительных Chat ID:</strong> по одному значению на строку (например: <code>123456</code>, <code>-100987654</code>, <code>chat_abcd123</code>).</p>';
-        echo '<p><strong>Важно:</strong> если список пуст, проверьте права бота в группе и отправьте тестовое сообщение в чат ещё раз.</p>';
+        echo '<p><strong>Важно:</strong> Chat ID должен быть числом. Username бота (@id…_bot) в поле Chat ID даёт HTTP 400. У каналов часто минус в начале.</p>';
 
         echo '<h3>API MAX (с 19 июля 2026)</h3>';
         echo '<p>Плагин обращается к <code>'.esc_html(self::api_base()).'</code> (миграция с <code>platform-api.max.ru</code>).</p>';
@@ -1095,7 +1095,9 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             echo '<div class="notice notice-warning inline"><p>Сначала укажите Token на вкладке «Настройки», затем вернитесь сюда.</p></div>';
         } else {
             $res = self::get_discovered_chats_cached($token);
-            if (!empty($res['error'])) {
+            if (!empty($res['unavailable']) || !empty($res['notice'])) {
+                echo '<div class="notice notice-info inline"><p>'.esc_html((string)($res['notice'] !== '' ? $res['notice'] : 'Список чатов через API больше недоступен. Скопируйте Chat ID из клиента MAX.')).'</p></div>';
+            } elseif (!empty($res['error'])) {
                 echo '<div class="notice notice-error inline"><p>Не удалось получить чаты: '.esc_html((string)$res['error']).'</p></div>';
             } else {
                 $items = $res['items'] ?? [];
@@ -1111,7 +1113,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                     }
                     echo '</tbody></table>';
                 } else {
-                    echo '<div class="notice notice-info inline"><p>Чаты не найдены. Добавьте бота в группу, отправьте туда сообщение и обновите страницу.</p></div>';
+                    echo '<div class="notice notice-info inline"><p>Чаты не найдены. Скопируйте Chat ID из клиента MAX.</p></div>';
                 }
             }
         }
@@ -1833,7 +1835,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             if ($up === false) {
                 self::log('send_image_skip', 0, $post_id, 'Upload failed, sending text-only (see upload_* logs)');
             } else {
-                $attachments[] = ['type'=>'image','payload'=>$up]; // IMPORTANT: full JSON
+                $attachments[] = ['type'=>'image','payload'=>$up]; // {token} or {url}
             }
         }
 
@@ -1871,8 +1873,8 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     /**
      * Upload flow:
      * 1) POST /uploads?type=image -> {url,type}
-     * 2) POST upload_url multipart (data=@file) -> JSON (may be {token,url,type} OR {"photos":{...}} etc.)
-     * IMPORTANT: For MAX we must pass FULL JSON response from step2 into image.payload.
+     * 2) POST upload_url multipart (data=@file) -> JSON ({token} or {"photos":{...:{token}}})
+     * API2 POST /messages accepts only image.payload = {token} or {url}. Raw step2 JSON is normalized.
      */
     private static function upload(string $file, string $token, int $post_id) {
         if (!file_exists($file)) {
@@ -1945,37 +1947,90 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         $j2 = json_decode((string)$out, true);
 
-        // ✅ FIX (your log case): MAX may return nested objects, e.g. {"photos":{...:{token:"..."}}}
-        // We must accept any valid JSON object/array and pass it as-is into image.payload.
         if (!is_array($j2) || empty($j2)) {
             self::log('upload_step2', $code2, $post_id, 'Bad JSON: '.self::sanitize_upload_log_text((string)$out));
             return false;
         }
 
-        return $j2;
+        $normalized = self::normalize_image_payload($j2);
+        if ($normalized === null) {
+            self::log('upload_step2', $code2, $post_id, 'No token/url in upload JSON: '.self::sanitize_upload_log_text((string)$out));
+            return false;
+        }
+
+        return $normalized;
     }
 
 
-    private static function discover_chats(string $token): array {
-        $endpoints = [
-            self::api_url('/chats?limit=50'),
-            self::api_url('/chats'),
-        ];
-
-        $last_error = '';
-
-        foreach ($endpoints as $url) {
-            $r = self::max_get_json($url, $token);
-            if (!empty($r['error'])) {
-                $last_error = (string)$r['error'];
-                continue;
-            }
-
-            $items = self::normalize_chats_payload($r['json'] ?? null);
-            return ['items' => $items, 'error' => ''];
+    /**
+     * PhotoAttachmentRequestPayload: token, url and photos are mutually exclusive.
+     * API2 rejects raw step2 JSON {"photos":{...}} with proto.payload.
+     *
+     * @param mixed $raw
+     */
+    private static function normalize_image_payload($raw): ?array {
+        if (!is_array($raw) || empty($raw)) {
+            return null;
         }
 
-        return ['items'=>[], 'error'=> $last_error !== '' ? $last_error : 'Неизвестная ошибка'];
+        $token = self::extract_image_token($raw);
+        if ($token !== '') {
+            return ['token' => $token];
+        }
+
+        if (!empty($raw['url']) && is_string($raw['url']) && preg_match('#^https://#i', $raw['url'])) {
+            return ['url' => $raw['url']];
+        }
+
+        return null;
+    }
+
+    /**
+     * Walk photos.* / token recursively and return the first non-empty token string.
+     *
+     * @param mixed $node
+     */
+    private static function extract_image_token($node, int $depth = 0): string {
+        if ($depth > 6) {
+            return '';
+        }
+        if (!is_array($node)) {
+            return '';
+        }
+        if (!empty($node['token']) && is_string($node['token'])) {
+            $t = trim($node['token']);
+            if ($t !== '') {
+                return $t;
+            }
+        }
+        if (isset($node['photos']) && is_array($node['photos'])) {
+            $from_photos = self::extract_image_token($node['photos'], $depth + 1);
+            if ($from_photos !== '') {
+                return $from_photos;
+            }
+        }
+        foreach ($node as $item) {
+            if (is_array($item)) {
+                $found = self::extract_image_token($item, $depth + 1);
+                if ($found !== '') {
+                    return $found;
+                }
+            }
+        }
+        return '';
+    }
+
+    private static function discover_chats(string $token): array {
+        // GET /chats removed by MAX in June 2026 (method.notfound / Path /chats is not recognized).
+        // Listing chats now requires POST /subscriptions + storing bot_added events — out of scope
+        // for this plugin. Chat ID is copied from the MAX client (channels are negative).
+        unset($token);
+        return [
+            'items' => [],
+            'error' => '',
+            'unavailable' => true,
+            'notice' => 'С июня 2026 MAX больше не отдаёт список чатов (метод GET /chats удалён). Chat ID копируется из клиента MAX: откройте канал или группу → скопируйте ID. У каналов ID обычно отрицательный, со знаком минус.',
+        ];
     }
 
     private static function get_discovered_chats_cached(string $token): array {
@@ -2247,34 +2302,64 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $primary['fallback_used'] = false;
         $primary['format'] = (string)($payload['format'] ?? '');
 
-        // Fallback for full formatted mode and for light HTML (e.g. bold title in plain/excerpt).
-        $used_html = ($format_mode === 'formatted')
-            || ((string)($payload['format'] ?? '') !== '');
-
-        if (!empty($primary['ok']) || !$used_html) {
+        if (!empty($primary['ok'])) {
             return $primary;
         }
 
-        $fallback_payload = self::apply_notify_to_payload(
-            [
-                'text' => $plain_fallback !== ''
-                    ? $plain_fallback
-                    : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings()),
-            ],
-            array_key_exists('notify', $payload) ? (bool)$payload['notify'] : true
-        );
+        $notify = array_key_exists('notify', $payload) ? (bool)$payload['notify'] : true;
+        $has_attachments = !empty($payload['attachments']) && is_array($payload['attachments']);
+        $used_html = ($format_mode === 'formatted') || ((string)($payload['format'] ?? '') !== '');
 
-        self::log(
-            'fallback',
-            (int)($primary['http'] ?? 0),
-            $post_id,
-            '[chat_id='.self::mask_chat_id_for_log($chat_id).'] html/formatted failed, fallback to plain text without attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
-        );
+        // 1) Same attachments, drop format=html — proto.payload often comes from markup, not media.
+        if ($has_attachments && $used_html) {
+            $plain_with_att = $payload;
+            unset($plain_with_att['format']);
+            if ($plain_fallback !== '') {
+                $plain_with_att['text'] = $plain_fallback;
+            }
+            $plain_with_att = self::apply_notify_to_payload($plain_with_att, $notify);
 
-        $retry = self::api_with_notify_guard($fallback_payload, $chat_id, $token, $post_id, $debug);
-        $retry['fallback_used'] = true;
-        $retry['format'] = '';
-        return $retry;
+            self::log(
+                'fallback',
+                (int)($primary['http'] ?? 0),
+                $post_id,
+                '[chat_id='.self::mask_chat_id_for_log($chat_id).'] html failed, retry plain WITH attachments: '.self::short((string)($primary['message'] ?? 'unknown error'))
+            );
+
+            $retry_att = self::api_with_notify_guard($plain_with_att, $chat_id, $token, $post_id, $debug);
+            if (!empty($retry_att['ok'])) {
+                $retry_att['fallback_used'] = true;
+                $retry_att['format'] = '';
+                return $retry_att;
+            }
+            $primary = $retry_att;
+        }
+
+        // 2) Text-only. Also used when plain+image already failed (API2 proto.payload on attachments).
+        if ($used_html || $has_attachments) {
+            $text_only = self::apply_notify_to_payload(
+                [
+                    'text' => $plain_fallback !== ''
+                        ? $plain_fallback
+                        : self::limit_text(self::clean_publish_text((string)($payload['text'] ?? '')), self::get_settings()),
+                ],
+                $notify
+            );
+
+            self::log(
+                'fallback',
+                (int)($primary['http'] ?? 0),
+                $post_id,
+                '[chat_id='.self::mask_chat_id_for_log($chat_id).'] retry text-only: '.self::short((string)($primary['message'] ?? 'unknown error'))
+            );
+
+            $retry = self::api_with_notify_guard($text_only, $chat_id, $token, $post_id, $debug);
+            $retry['fallback_used'] = true;
+            $retry['format'] = '';
+            return $retry;
+        }
+
+        return $primary;
     }
 
     /* ================= HELPERS ================= */
@@ -2400,7 +2485,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $body_plain = ltrim(str_replace(["\r\n", "\r"], "\n", $body_plain), "\n");
         $body_plain = rtrim($body_plain, "\n");
 
-        $html = '<strong>' . esc_html($title) . '</strong>';
+        $html = '<b>' . esc_html($title) . '</b>';
         if ($body_plain !== '') {
             $html .= "\n\n" . self::plain_text_to_max_html($body_plain);
         }
@@ -2492,7 +2577,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     /**
      * When bold_title is on, convert a finished plain message into MAX HTML with:
-     * - <strong>title</strong>
+     * - <b>title</b>
      * - a literal blank line before body
      * - literal LF line breaks in body
      * - «Текст после записи» as a separate HTML block (keeps <a href>, not esc_html'd)
@@ -2838,7 +2923,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         if ($mode === 'formatted') {
             $title_html = self::is_bold_title_enabled($settings)
-                ? '<strong>MAX Autopost: тест форматирования</strong>'
+                ? '<b>MAX Autopost: тест форматирования</b>'
                 : 'MAX Autopost: тест форматирования';
             $formatted = $title_html."\n\n<em>Курсивный текст</em>\n<a href=\"".esc_url($url)."\">Ссылка на сайт</a>\n\n• Элемент списка 1\n• Элемент списка 2\n\n<code>code_example()</code>".$html_tail;
             $formatted = self::append_html_block_for_max($formatted, (string)$append['html']);
@@ -2853,7 +2938,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             $plain = self::append_plain_tail_preserving_end($title . $plain_tail, (string)$append['plain'], $settings);
             if (self::is_bold_title_enabled($settings)) {
                 $html = self::append_html_block_for_max(
-                    '<strong>'.esc_html($title).'</strong>'.$html_tail,
+                    '<b>'.esc_html($title).'</b>'.$html_tail,
                     (string)$append['html']
                 );
                 return self::wrap_html_message_result('title_only', $html, $plain, mb_strlen($plain, 'UTF-8'));
@@ -2868,7 +2953,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $plain = self::append_plain_tail_preserving_end("MAX Autopost: тест\n\n".$url.$plain_tail, (string)$append['plain'], $settings);
         if (self::is_bold_title_enabled($settings)) {
             $html = self::append_html_block_for_max(
-                '<strong>MAX Autopost: тест</strong>'."\n\n".esc_html($url).$html_tail,
+                '<b>MAX Autopost: тест</b>'."\n\n".esc_html($url).$html_tail,
                 (string)$append['html']
             );
             return self::wrap_html_message_result($mode, $html, $plain, mb_strlen($plain, 'UTF-8'));
@@ -2925,7 +3010,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         // Title + strict visual gap before body (same rule as bold plain path).
         if (self::is_bold_title_enabled($settings)) {
-            $composed = '<strong>' . $title . '</strong>';
+            $composed = '<b>' . $title . '</b>';
         } else {
             $composed = $title;
         }
