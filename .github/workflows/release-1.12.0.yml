@@ -1,0 +1,63 @@
+name: release-1.12.0
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: PHP syntax check
+        run: |
+          set -euo pipefail
+          find . -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Pack plugin ZIP
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/stage
+          rsync -a \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'patches' \
+            --exclude 'tests' \
+            --exclude 'support-frolov-2026-08-05' \
+            --exclude 'dist' \
+            --exclude '*.zip' \
+            ./ /tmp/stage/max-autopost/
+          (cd /tmp/stage && zip -r "$GITHUB_WORKSPACE/max-autopost-1.12.0.zip" max-autopost)
+          if unzip -l max-autopost-1.12.0.zip | grep -E '(^|/)(tests/|\.github/|patches/|support-frolov-2026-08-05/)'; then
+            echo "ZIP contains excluded paths"
+            exit 1
+          fi
+          ls -l max-autopost-1.12.0.zip
+
+      - name: Release notes from CHANGELOG
+        run: |
+          set -euo pipefail
+          awk '
+            /^## 1\.12\.0[[:space:]]*$/ {p=1; next}
+            /^## / {if (p) exit}
+            p {print}
+          ' CHANGELOG.md > /tmp/release-notes.md
+          test -s /tmp/release-notes.md
+
+      - name: Create GitHub Release v1.12.0
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.12.0
+          name: MAX Autopost 1.12.0
+          target_commitish: main
+          body_path: /tmp/release-notes.md
+          files: max-autopost-1.12.0.zip

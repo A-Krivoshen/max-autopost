@@ -13,6 +13,17 @@
 
 ---
 
+## Что нового в 1.12.0
+
+| | |
+| --- | --- |
+| **Обновление** | Автоворкер, stamp и cutoff не сбрасываются. В ошибку уходят только queued старше 14 дней. |
+| **Один пост** | `wp max-autopost send <id>` и `KRV_MAX_Autopost::send_post_now($id)` шлют именно эту запись, а не голову очереди. |
+| **Пачка** | За тик уходит до N постов с паузой. HTTP 429 останавливает пачку и не растит счётчик попыток. |
+| **Переочередь** | Сначала сухой просмотр и отдельное подтверждение. sent / partial_success по умолчанию не трогаются. |
+
+Полная история: **[CHANGELOG.md](./CHANGELOG.md)**.
+
 ## Что нового в 1.11.9
 
 | | |
@@ -49,7 +60,7 @@
 | --- | --- |
 | **Мультиканал** | Один пост — сразу в несколько `chat_id` (каналы и группы). Ошибка в одном чате не останавливает остальные. |
 | **Форматы текста** | `plain_text`, `formatted`, `excerpt_plain`, `title_only`; жирный заголовок; подпись и кнопки «Читать» / «Подписаться». |
-| **Очередь** | WP-Cron worker, retry с backoff, lock, фильтры статусов, bulk-действия, безопасный старт после установки. |
+| **Очередь** | WP-Cron worker, пачка с паузой, retry с backoff, lock, фильтры статусов, bulk-действия, безопасный старт после установки. |
 | **Надёжность** | Корректный upload image (`{token}`/`{url}`), fallback с сохранением вложений, soft-fail картинки → text-only, guard `channel-notify`. |
 | **Обновления** | Автообновление из GitHub Releases (без WP.org). |
 | **Shared-хостинг** | CA Минцифры дописывается к системному/WP bundle — HTTPS к MAX и CDN работает на типичных тарифах. |
@@ -63,7 +74,7 @@
 </p>
 
 1. **Публикация** — запись уходит в очередь при publish (сразу, по расписанию или вручную).
-2. **Очередь** — воркер WP-Cron забирает задания по одному, с retry и lock.
+2. **Очередь** — воркер WP-Cron забирает пачку постов с паузой, с retry и lock.
 3. **Сборка** — формируется одно сообщение MAX: `IMAGE` (если есть) + `TEXT` + inline-кнопки.
 4. **Доставка** — последовательная отправка по всем target `chat_id`.
 
@@ -145,6 +156,49 @@ define('KRV_MAX_CHAT_ID', 'your-chat-id');
 - Контакт: `aleksey@krivoshein.site`
 
 ---
+
+## WP-CLI и отправка из скриптов
+
+Команды появляются, когда загружен WP-CLI. Token и chat_id в `status` маскируются.
+
+```bash
+wp max-autopost status
+wp max-autopost queue list --status=queued --limit=50 --format=json
+wp max-autopost queue run --limit=5
+wp max-autopost send 12223
+wp max-autopost send 12223 --dry-run
+wp max-autopost send 12223 --force
+wp max-autopost worker enable
+wp max-autopost worker disable
+```
+
+Скрипт, который раньше вызывал `KRV_MAX_Autopost::process_queue(true)` и тем самым отправлял голову очереди, теперь целится в только что опубликованный пост:
+
+```bash
+wp max-autopost send 12223
+```
+
+Тот же вызов из PHP, в обход выключателя воркера:
+
+```php
+KRV_MAX_Autopost::send_post_now(12223);
+KRV_MAX_Autopost::send_post_now(12223, ['dry_run' => true]);
+KRV_MAX_Autopost::send_post_now(12223, ['force' => true]);
+```
+
+Если в `wp-config.php` стоит `DISABLE_WP_CRON`, петля `wp-cron.php` ничего не делает. Событие раз в минуту нужно запускать системным cron, каждую минуту:
+
+```bash
+* * * * * www-data flock -n /tmp/krv-wpcron.lock wp --path=/path/to/htdocs cron event run --due-now --quiet
+```
+
+Проверка очереди на одноразовом стенде (не на боевом сайте):
+
+```bash
+KRV_MAX_SMOKE_ALLOW=1 wp eval-file tests/smoke-queue.php --skip-plugins
+```
+
+Скрипт отказывается работать без переменной и на хосте боевого сайта. Перед выходом он возвращает опции плагина.
 
 ## Для контрибьюторов
 
