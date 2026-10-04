@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAX Autopost (Free)
  * Description: Автопостинг из WordPress в MAX (platform-api2.max.ru): одно сообщение (IMAGE + TEXT + КНОПКА), image.payload = {token}/{url}, очередь WP-Cron, retry, логи.
- * Version: 1.11.9
+ * Version: 1.12.0
  * Author: Dr.Slon
  * Requires PHP: 8.0
  * Update URI: https://github.com/A-Krivoshen/max-autopost/
@@ -20,7 +20,7 @@ final class KRV_MAX_Autopost {
     private const INSTALL_STAMP_OPT = 'krv_max_autopost_install_stamp';
     private const WORKER_ENABLED_OPT = 'krv_max_autopost_worker_enabled';
 
-    private const VERSION = '1.11.9';
+    private const VERSION = '1.12.0';
     private const UPDATE_REPO_URL = 'https://github.com/A-Krivoshen/max-autopost/';
     /** MAX Bot API host (migration from platform-api.max.ru → platform-api2.max.ru before 2026-07-19). */
     private const API_HOST = 'https://platform-api2.max.ru';
@@ -32,6 +32,8 @@ final class KRV_MAX_Autopost {
     private const META_QUEUEDAT = '_krv_max_queued_at';
     private const META_QSTAMP   = '_krv_max_queue_stamp';
     private const META_SENTHASH = '_krv_max_sent_hash';
+    /** Previous hash kept when an operator explicitly requeues an already sent post. */
+    private const META_SENTHASH_PREV = '_krv_max_sent_hash_prev';
     private const META_TARGET_RESULTS = '_krv_max_target_results';
 
     private const META_DISABLE  = '_krv_max_disable';
@@ -53,9 +55,20 @@ final class KRV_MAX_Autopost {
     private const LOG_LIMIT   = 50;
     /** Max posts touched per bulk queue/requeue click (avoid timeouts / accidental mass send). */
     private const REQUEUE_BATCH = 50;
+    /** One queue run must finish before the 55s cron lock expires. */
+    private const RUN_BUDGET_SEC = 45;
+    private const CRON_LOCK_TTL = 55;
+    private const SEND_LOCK_TTL = 120;
+    private const STALE_QUEUE_DAYS_DEFAULT = 14;
+    private const CRON_STALE_SEC = 1800;
+    private const BATCH_PER_RUN_MAX = 20;
+    private const CLI_LIMIT_MAX = 50;
 
     // Retry backoff (attempt 1..N). After last element -> error.
     private static array $backoff = [60, 180, 600, 1800, 3600];
+
+    /** @var array<int,string> Posts queued in this request => install stamp at that moment. */
+    private static array $queued_in_request = [];
 
     public static function init(): void {
         self::maybe_handle_upgrade();
@@ -68,7 +81,8 @@ final class KRV_MAX_Autopost {
         add_action('admin_notices', [__CLASS__, 'admin_notices']);
 
         add_action('transition_post_status', [__CLASS__, 'queue_on_publish'], 10, 3);
-        add_action('future_to_publish', [__CLASS__, 'queue_on_future_publish'], 10, 1);
+        // future→publish is already delivered by transition_post_status.
+        // A second future_to_publish hook queued the same post twice (posts 12140, 12150).
         add_action(self::CRON_HOOK, [__CLASS__, 'process_queue']);
 
         add_action('add_meta_boxes', [__CLASS__, 'add_metabox']);
@@ -320,17 +334,22 @@ final class KRV_MAX_Autopost {
     }
 
     public static function activate(): void {
-        if (!wp_next_scheduled(self::CRON_HOOK)) {
-            wp_schedule_event(time() + 60, self::CRON_SCHEDULE, self::CRON_HOOK);
+        self::ensure_cron_scheduled();
+
+        // Fresh install only. Reactivation must not disable the worker or rotate the queue stamp.
+        $fresh = get_option(self::VER_OPT, null) === false
+            && get_option(self::INSTALL_STAMP_OPT, null) === false
+            && get_option(self::WORKER_ENABLED_OPT, null) === false
+            && get_option(self::CUTOFF_OPT, null) === false;
+        if (!$fresh) {
+            return;
         }
 
-        $cutoff = time();
         update_option(self::VER_OPT, self::VERSION, false);
-        update_option(self::CUTOFF_OPT, $cutoff, false);
+        update_option(self::CUTOFF_OPT, time(), false);
         update_option(self::INSTALL_STAMP_OPT, self::new_install_stamp(), false);
         update_option(self::WORKER_ENABLED_OPT, 0, false);
         update_option(self::UPGRADE_NOTICE_OPT, self::VERSION, false);
-        self::quarantine_stale_queue($cutoff);
     }
 
     public static function deactivate(): void {
@@ -349,19 +368,40 @@ final class KRV_MAX_Autopost {
             return;
         }
 
-        $from = $stored !== '' ? $stored : 'unknown';
-        $cutoff = time();
+        $stamp_exists = get_option(self::INSTALL_STAMP_OPT, null) !== false;
+        $worker_exists = get_option(self::WORKER_ENABLED_OPT, null) !== false;
+        $cutoff_exists = get_option(self::CUTOFF_OPT, null) !== false;
+        $is_upgrade = ($stored !== '' || $stamp_exists || $worker_exists || $cutoff_exists);
+
+        // Fill gaps for a fresh load. Never rotate values an existing install already has.
+        if (!$cutoff_exists) {
+            update_option(self::CUTOFF_OPT, time(), false);
+        }
+        if (!$stamp_exists) {
+            update_option(self::INSTALL_STAMP_OPT, self::new_install_stamp(), false);
+        }
+        if (!$worker_exists) {
+            update_option(self::WORKER_ENABLED_OPT, 0, false);
+        }
+
         update_option(self::VER_OPT, self::VERSION, false);
-        update_option(self::CUTOFF_OPT, $cutoff, false);
-        update_option(self::INSTALL_STAMP_OPT, self::new_install_stamp(), false);
-        update_option(self::WORKER_ENABLED_OPT, 0, false);
-        update_option(self::UPGRADE_NOTICE_OPT, self::VERSION . '|' . $from, false);
-        // Drop leftover single-event spam from older versions.
+
+        if ($is_upgrade && $stored !== '' && $stored !== self::VERSION) {
+            update_option(self::UPGRADE_NOTICE_OPT, self::VERSION . '|' . $stored, false);
+            self::migrate_queue_on_upgrade();
+        } elseif (!$is_upgrade) {
+            update_option(self::UPGRADE_NOTICE_OPT, self::VERSION, false);
+        }
+
+        // Drop leftover single-event spam from older versions, then keep one recurring event.
         wp_clear_scheduled_hook(self::CRON_HOOK);
+        self::ensure_cron_scheduled();
+    }
+
+    private static function ensure_cron_scheduled(): void {
         if (!wp_next_scheduled(self::CRON_HOOK)) {
             wp_schedule_event(time() + 60, self::CRON_SCHEDULE, self::CRON_HOOK);
         }
-        self::quarantine_stale_queue($cutoff);
     }
 
     private static function new_install_stamp(): string {
@@ -383,30 +423,137 @@ final class KRV_MAX_Autopost {
         return $stamp;
     }
 
-    private static function quarantine_stale_queue(int $cutoff): void {
-        $posts = get_posts([
-            'post_type' => 'any',
-            'post_status' => 'publish',
-            'numberposts' => 1000,
-            'fields' => 'ids',
-            'suppress_filters' => true,
-            'meta_query' => [
-                ['key' => self::META_STATUS, 'value' => 'queued'],
-                [
-                    'relation' => 'OR',
-                    ['key' => self::META_QUEUEDAT, 'compare' => 'NOT EXISTS'],
-                    ['key' => self::META_QUEUEDAT, 'value' => $cutoff, 'type' => 'NUMERIC', 'compare' => '<'],
-                ],
-            ],
-        ]);
-
-        foreach ($posts as $post_id) {
-            $post_id = (int)$post_id;
-            update_post_meta($post_id, self::META_STATUS, 'error');
-            update_post_meta($post_id, self::META_ERROR, 'Старая очередь заблокирована после установки/обновления. Поставьте пост в очередь вручную.');
-            update_post_meta($post_id, self::META_NEXTTRY, 0);
-            delete_post_meta($post_id, self::META_QSTAMP);
+    /**
+     * Days after which a still-queued post is failed on upgrade.
+     * Filter: krv_max_autopost_stale_queue_days.
+     */
+    private static function stale_queue_seconds(): int {
+        $days = (int) apply_filters('krv_max_autopost_stale_queue_days', self::STALE_QUEUE_DAYS_DEFAULT);
+        if ($days < 1) {
+            $days = 1;
         }
+        if ($days > 3650) {
+            $days = 3650;
+        }
+        return $days * (int) DAY_IN_SECONDS;
+    }
+
+    /**
+     * Upgrade migration.
+     * - sent / partial_success are not queried and their meta is not written.
+     * - queued older than the stale threshold becomes error.
+     * - queued younger than that, but carrying an old stamp or queued_at below cutoff, is restamped and kept.
+     *
+     * Filter krv_max_autopost_upgrade_queue_ids (int[]|null) limits the scan. Null means every queued post.
+     */
+    private static function migrate_queue_on_upgrade(): void {
+        $ids = self::queued_post_ids_for_upgrade();
+        $stamp = (string) get_option(self::INSTALL_STAMP_OPT, '');
+        if ($stamp === '') {
+            $stamp = self::current_install_stamp();
+        }
+        $cutoff = (int) get_option(self::CUTOFF_OPT, 0);
+        $threshold = time() - self::stale_queue_seconds();
+
+        foreach ($ids as $post_id) {
+            $status = (string) get_post_meta($post_id, self::META_STATUS, true);
+            if ($status !== 'queued') {
+                continue;
+            }
+
+            $queued_raw = get_post_meta($post_id, self::META_QUEUEDAT, true);
+            $has_queued_at = $queued_raw !== '' && $queued_raw !== false && $queued_raw !== null;
+            $queued_at = $has_queued_at ? (int) $queued_raw : 0;
+
+            if ($has_queued_at && $queued_at > 0 && $queued_at < $threshold) {
+                self::quarantine_queued_post($post_id);
+                continue;
+            }
+
+            $qstamp = (string) get_post_meta($post_id, self::META_QSTAMP, true);
+            $below_cutoff = $cutoff > 0 && $has_queued_at && $queued_at < $cutoff;
+            $needs_restamp = ($qstamp !== $stamp) || $below_cutoff || !$has_queued_at;
+            if (!$needs_restamp) {
+                continue;
+            }
+
+            update_post_meta($post_id, self::META_QSTAMP, $stamp);
+            if (!$has_queued_at) {
+                update_post_meta($post_id, self::META_QUEUEDAT, $cutoff > 0 ? $cutoff : time());
+            } elseif ($below_cutoff) {
+                // Keep the post eligible: process_queue requires queued_at >= cutoff.
+                update_post_meta($post_id, self::META_QUEUEDAT, $cutoff);
+            }
+        }
+
+        self::clear_queue_count_cache();
+    }
+
+    /**
+     * @return int[]
+     */
+    private static function queued_post_ids_for_upgrade(): array {
+        $ids = [];
+        $paged = 1;
+        while ($paged <= 20) {
+            $q = new WP_Query([
+                'post_type' => 'any',
+                'post_status' => 'any',
+                'posts_per_page' => 500,
+                'paged' => $paged,
+                'fields' => 'ids',
+                'orderby' => 'ID',
+                'order' => 'ASC',
+                'no_found_rows' => true,
+                'suppress_filters' => true,
+                'update_post_meta_cache' => false,
+                'update_post_term_cache' => false,
+                'ignore_sticky_posts' => true,
+                'meta_query' => [
+                    ['key' => self::META_STATUS, 'value' => 'queued'],
+                ],
+            ]);
+            if (empty($q->posts)) {
+                break;
+            }
+            foreach ($q->posts as $post_id) {
+                $ids[] = (int) $post_id;
+            }
+            if (count($q->posts) < 500) {
+                break;
+            }
+            $paged++;
+        }
+        wp_reset_postdata();
+
+        $only = apply_filters('krv_max_autopost_upgrade_queue_ids', null);
+        if (is_array($only)) {
+            $allow = array_fill_keys(array_map('intval', $only), true);
+            $ids = array_values(array_filter($ids, static function (int $id) use ($allow): bool {
+                return isset($allow[$id]);
+            }));
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Fail one queued post that waited longer than the stale threshold.
+     * Does not read or write sent hash / target results.
+     */
+    private static function quarantine_queued_post(int $post_id): void {
+        $status = (string) get_post_meta($post_id, self::META_STATUS, true);
+        if ($status !== 'queued') {
+            return;
+        }
+        update_post_meta($post_id, self::META_STATUS, 'error');
+        update_post_meta(
+            $post_id,
+            self::META_ERROR,
+            'Старая очередь заблокирована: пост ждал дольше допустимого срока. Поставьте пост в очередь вручную.'
+        );
+        update_post_meta($post_id, self::META_NEXTTRY, 0);
+        delete_post_meta($post_id, self::META_QSTAMP);
     }
 
 
@@ -433,6 +580,8 @@ final class KRV_MAX_Autopost {
             'notify'        => 1,
             'debug'         => 0,
             'enable_worker_after_test' => 0,
+            'batch_per_run' => self::BATCH_LIMIT,
+            'send_interval_sec' => 3,
         ];
     }
 
@@ -506,6 +655,16 @@ final class KRV_MAX_Autopost {
         $out['notify'] = !empty($in['notify']) ? 1 : 0;
         $out['debug']  = !empty($in['debug']) ? 1 : 0;
         $out['enable_worker_after_test'] = !empty($in['enable_worker_after_test']) ? 1 : 0;
+
+        $batch_source = isset($in['batch_per_run'])
+            ? (int) $in['batch_per_run']
+            : (int) ($prev['batch_per_run'] ?? $d['batch_per_run']);
+        $out['batch_per_run'] = max(1, min(self::BATCH_PER_RUN_MAX, $batch_source));
+
+        $interval_source = isset($in['send_interval_sec'])
+            ? (int) $in['send_interval_sec']
+            : (int) ($prev['send_interval_sec'] ?? $d['send_interval_sec']);
+        $out['send_interval_sec'] = max(0, min(60, $interval_source));
 
         return $out;
     }
@@ -590,11 +749,29 @@ final class KRV_MAX_Autopost {
                 admin_url('admin-post.php?action=krv_max_dismiss_upgrade_notice'),
                 'krv_max_dismiss_upgrade_notice'
             );
-            echo '<div class="notice notice-info"><p><strong>MAX Autopost '.esc_html($ver).'</strong> — плагин обновлён. ';
-            echo 'API: <code>platform-api2.max.ru</code>. Автоворкер выключен, старая очередь заблокирована (защита от массовой рассылки). ';
-            echo 'Проверьте <a href="'.esc_url(admin_url('admin.php?page=krv-max-autopost&tab=settings')).'">настройки</a> и «Отправить тест». ';
-            echo 'SSL: плагин сам подмешивает CA Минцифры (не нужен системный cert на shared-хостинге). ';
+            $days = (int) apply_filters('krv_max_autopost_stale_queue_days', self::STALE_QUEUE_DAYS_DEFAULT);
+            if ($days < 1) {
+                $days = 1;
+            }
+            if ($days > 3650) {
+                $days = 3650;
+            }
+            $from = isset($parts[1]) ? $parts[1] : '';
+            echo '<div class="notice notice-info"><p><strong>MAX Autopost '.esc_html($ver).'</strong> — ';
+            if ($from !== '') {
+                echo 'плагин обновлён с '.esc_html($from).'. ';
+                echo 'Автоворкер, stamp очереди и cutoff не сбрасываются. Свежие посты в очереди остаются в очереди. ';
+                echo 'В ошибку переводятся только queued, которые ждали дольше '.esc_html((string) $days).' дн. ';
+                echo 'Статусы sent и partial_success не меняются. ';
+            } else {
+                echo 'плагин установлен. Автоворкер выключен, пока вы сами его не включите. Старая очередь не затрагивается. ';
+            }
+            echo 'Проверьте вкладку <a href="'.esc_url(admin_url('admin.php?page=krv-max-autopost&tab=queue')).'">«Очередь»</a>. ';
             echo '<a href="'.esc_url($dismiss).'">Скрыть</a>.</p></div>';
+        }
+
+        foreach (self::stuck_queue_notices() as $notice) {
+            echo $notice;
         }
     }
 
@@ -797,6 +974,17 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
         self::settings_section('Очередь и отладка');
 
+        $batch_ui = max(1, min(self::BATCH_PER_RUN_MAX, (int) ($s['batch_per_run'] ?? self::BATCH_LIMIT)));
+        $interval_ui = max(0, min(60, (int) ($s['send_interval_sec'] ?? 3)));
+        echo '<tr><th>Постов за запуск</th><td>';
+        echo '<input type="number" min="1" max="'.esc_attr((string) self::BATCH_PER_RUN_MAX).'" step="1" name="'.esc_attr(self::OPT).'[batch_per_run]" value="'.esc_attr((string) $batch_ui).'" style="width:90px;">';
+        echo '<p class="description">Сколько постов забирать за один тик крона или кнопку «Запустить очередь сейчас». От 1 до '.esc_html((string) self::BATCH_PER_RUN_MAX).', по умолчанию 1.</p>';
+        echo '</td></tr>';
+        echo '<tr><th>Пауза между отправками, с</th><td>';
+        echo '<input type="number" min="0" max="60" step="1" name="'.esc_attr(self::OPT).'[send_interval_sec]" value="'.esc_attr((string) $interval_ui).'" style="width:90px;">';
+        echo '<p class="description">Пауза между постами внутри одного запуска. По умолчанию 3 секунды. Один запуск укладывается примерно в '.esc_html((string) self::RUN_BUDGET_SEC).' секунд.</p>';
+        echo '</td></tr>';
+
         echo '<tr><th>Уведомления MAX</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[notify]" value="1" '.checked((int)$s['notify'],1,false).'> Отправлять с notify (пуш подписчикам)</label>';
         echo '<p class="description">Для <strong>каналов</strong> MAX silent-режим (<code>notify=false</code>) API не принимает — ошибка <code>errors.send-message.channel-notify</code>. Плагин при такой ошибке сам повторит отправку без silent (с уведомлением). Для групп и диалогов silent обычно работает.</p></td></tr>';
         echo '<tr><th>Отладка</th><td><label><input type="checkbox" name="'.esc_attr(self::OPT).'[debug]" value="1" '.checked((int)$s['debug'],1,false).'> Расширенные логи (token/URL маскируются)</label></td></tr>';
@@ -857,6 +1045,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     private static function clear_queue_count_cache(): void {
         delete_transient('krv_max_queue_counts');
+        delete_transient('krv_max_queue_stuck');
     }
 
     private static function get_queue_counts(): array {
@@ -883,18 +1072,18 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $pub_count = self::count_published_supported();
         $err_count = self::queue_status_count('error');
         $batch = self::REQUEUE_BATCH;
-        $est_all = $pub_count * max(1, $targets_n);
-        $est_batch = min($pub_count, $batch) * max(1, $targets_n);
 
         $status_filter = isset($_GET['qstatus']) ? sanitize_key((string)$_GET['qstatus']) : 'all';
         if (!in_array($status_filter, ['all', 'queued', 'error', 'partial_success', 'sent'], true)) {
             $status_filter = 'all';
         }
 
+        $per_run = self::batch_per_run();
+        $interval = self::send_interval_sec();
         echo '<div style="margin:8px 0 12px;padding:8px 12px;background:#fff;border-left:4px solid '.esc_attr($status_color).';">';
         echo '<strong>Автоворкер:</strong> <span style="color:'.esc_attr($status_color).';font-weight:700;">'.esc_html($status_text).'</span>';
         echo $worker_on
-            ? '<span style="margin-left:8px;color:#555;">очередь обрабатывается автоматически (1 пост / тик).</span>'
+            ? '<span style="margin-left:8px;color:#555;">очередь обрабатывается автоматически (до '.esc_html((string) $per_run).' пост. / тик, пауза '.esc_html((string) $interval).' с).</span>'
             : '<span style="margin-left:8px;color:#555;">автоотправка выключена — только ручной запуск или включение воркера.</span>';
         echo '<br><span class="description">Целей (chat ID): <strong>'.esc_html((string)$targets_n).'</strong>. Опубликовано подходящих записей: <strong>'.esc_html((string)$pub_count).'</strong>. ';
         if ($targets_n > 1) {
@@ -924,7 +1113,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             echo '</form>';
         }
 
-        echo '<p class="description" style="margin:6px 0 0;flex-basis:100%;">Сохранение Token/Chat ID не гоняет старую очередь. Ручной запуск — 1 элемент. Массовые кнопки ниже берут пачками по '.esc_html((string)$batch).' постов.</p>';
+        echo '<p class="description" style="margin:6px 0 0;flex-basis:100%;">Сохранение Token/Chat ID не гоняет старую очередь. Ручной запуск берёт до '.esc_html((string) $per_run).' постов с паузой '.esc_html((string) $interval).' с. Массовые кнопки ниже берут пачками по '.esc_html((string)$batch).' постов. sent и partial_success в эти пачки не попадают, пока это не включено отдельно в «Переочереди».</p>';
 
         $confirm_err = 'Вернуть в очередь ошибочные посты ('.(int)$err_count.')? Целей: '.(int)$targets_n.'.';
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
@@ -933,20 +1122,24 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         submit_button('Вернуть ошибки в очередь','secondary','submit',false,['onclick'=>'return confirm('.wp_json_encode($confirm_err).');']);
         echo '</form>';
 
-        $confirm_all = 'Поставить в очередь до '.$batch.' опубликованных (из '.(int)$pub_count.')? Целей: '.(int)$targets_n.', ориентир до '.(int)$est_batch.' сообщений в MAX. Повторите кнопку для следующей пачки.';
+        $confirm_all = 'Поставить в очередь до '.$batch.' опубликованных без статуса sent, partial_success и queued (из '.(int)$pub_count.' опубликованных)? Целей: '.(int)$targets_n.'. Уже отправленные не входят. Повторите кнопку для следующей пачки.';
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
         wp_nonce_field('krv_max_queue_all_published');
         echo '<input type="hidden" name="action" value="krv_max_queue_all_published">';
         submit_button('В очередь: published (пачка '.$batch.')','secondary','submit',false,['onclick'=>'return confirm('.wp_json_encode($confirm_all).');']);
         echo '</form>';
 
-        $confirm_re = 'Переочередь до '.$batch.' published с текущими настройками (сброс sent-hash). Целей: '.(int)$targets_n.', ориентир до '.(int)$est_batch.' сообщений. Это может переотправить посты в MAX!';
-        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
-        wp_nonce_field('krv_max_requeue_published_current_settings');
-        echo '<input type="hidden" name="action" value="krv_max_requeue_published_current_settings">';
-        submit_button('Переочередь published (пачка '.$batch.')','secondary','submit',false,['onclick'=>'return confirm('.wp_json_encode($confirm_re).');']);
-        echo '</form>';
+        $preview_url = add_query_arg([
+            'page' => 'krv-max-autopost',
+            'tab' => 'queue',
+            'requeue_preview' => '1',
+        ], admin_url('admin.php'));
+        echo '<a class="button" href="'.esc_url($preview_url).'">Переочередь published: сначала просмотр</a>';
         echo '</div>';
+
+        if (!empty($_GET['requeue_preview'])) {
+            self::render_requeue_preview($targets_n);
+        }
 
         echo '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 12px;">';
         echo '<strong>Фильтр очереди:</strong>';
@@ -1216,6 +1409,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             return;
         }
 
+        // transition_post_status and a direct second call in the same request must queue once.
+        if (isset(self::$queued_in_request[$post_id])) {
+            return;
+        }
+
         self::queue_post($post_id,'Auto queue on publish');
         self::trigger_queue_worker();
     }
@@ -1236,10 +1434,21 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     public static function queue_on_future_publish(WP_Post $post): void {
+        // Kept for external callers. The hook itself is not registered: transition_post_status covers it.
         self::queue_on_publish('publish', 'future', $post);
     }
 
     private static function queue_post(int $post_id, string $why=''): void {
+        $stamp = self::current_install_stamp();
+        if (
+            isset(self::$queued_in_request[$post_id])
+            && self::$queued_in_request[$post_id] === $stamp
+            && (string) get_post_meta($post_id, self::META_STATUS, true) === 'queued'
+            && (string) get_post_meta($post_id, self::META_QSTAMP, true) === $stamp
+        ) {
+            return;
+        }
+
         update_post_meta($post_id,self::META_STATUS,'queued');
         delete_post_meta($post_id,self::META_ERROR);
         delete_post_meta($post_id,self::META_TARGET_RESULTS);
@@ -1247,16 +1456,32 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $now = time();
         update_post_meta($post_id,self::META_NEXTTRY,$now);
         update_post_meta($post_id,self::META_QUEUEDAT,$now);
-        update_post_meta($post_id,self::META_QSTAMP,self::current_install_stamp());
+        update_post_meta($post_id,self::META_QSTAMP,$stamp);
+        self::$queued_in_request[$post_id] = $stamp;
         self::log('queue',0,$post_id,$why ?: 'queued');
         self::clear_queue_count_cache();
     }
 
     private static function requeue_post_with_current_settings(int $post_id, string $why=''): void {
-        delete_post_meta($post_id,self::META_SENTHASH);
+        self::preserve_sent_hash_for_requeue($post_id);
         delete_post_meta($post_id,self::META_ERROR);
         delete_post_meta($post_id,self::META_TARGET_RESULTS);
+        // A publish earlier in this request must not block an explicit requeue.
+        unset(self::$queued_in_request[$post_id]);
         self::queue_post($post_id, $why);
+    }
+
+    /**
+     * Keep the previous delivery hash instead of dropping it silently.
+     */
+    private static function preserve_sent_hash_for_requeue(int $post_id): void {
+        $prev = get_post_meta($post_id, self::META_SENTHASH, true);
+        if (!is_string($prev) || $prev === '') {
+            return;
+        }
+        update_post_meta($post_id, self::META_SENTHASH_PREV, $prev);
+        self::log('requeue_reset', 0, $post_id, 'previous sent_hash stored in _krv_max_sent_hash_prev');
+        delete_post_meta($post_id, self::META_SENTHASH);
     }
 
     private static function trigger_queue_worker(): void {
@@ -1272,6 +1497,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     }
 
     private static function spawn_cron(): void {
+        // A loopback HTTP call does nothing useful when WP-Cron is disabled.
+        // The site cron should run `wp cron event run --due-now` instead.
+        if (defined('DISABLE_WP_CRON') && DISABLE_WP_CRON) {
+            return;
+        }
         $url = site_url('wp-cron.php?doing_wp_cron=' . urlencode((string)microtime(true)));
         wp_remote_post($url, ['timeout'=>1,'blocking'=>false]);
     }
@@ -1285,87 +1515,109 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         return $schedules;
     }
 
-    public static function process_queue(bool $force = false): void {
-        if (!$force && !self::is_worker_enabled()) return;
-        if (get_transient(self::CRON_LOCK_KEY)) return;
-        set_transient(self::CRON_LOCK_KEY, 1, 55);
+    /**
+     * Process the queue.
+     *
+     * $force bypasses the worker switch (manual run / legacy callers).
+     * $limit 0 means the "Постов за запуск" setting.
+     * $post_id > 0 sends only that post via send_post_now() and ignores the queue head.
+     *
+     * Old callers process_queue(true) keep working.
+     */
+    public static function process_queue(bool $force = false, int $limit = 0, int $post_id = 0): void {
+        if ($post_id > 0) {
+            self::send_post_now($post_id);
+            return;
+        }
+        if (!$force && !self::is_worker_enabled()) {
+            return;
+        }
+        if (!self::acquire_named_lock(self::CRON_LOCK_KEY, self::CRON_LOCK_TTL)) {
+            return;
+        }
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(self::RUN_BUDGET_SEC + 30);
+        }
 
         $now = time();
-        $cutoff = (int)get_option(self::CUTOFF_OPT, 0);
+        $started = microtime(true);
+        $cutoff = (int) get_option(self::CUTOFF_OPT, 0);
         $install_stamp = self::current_install_stamp();
+        $take = $limit > 0 ? $limit : self::batch_per_run();
+        $take = max(1, min(self::CLI_LIMIT_MAX, $take));
+        $interval = self::send_interval_sec();
 
         try {
-            $q = new WP_Query([
-                'post_type'=>self::supported_post_types(),
-                'post_status'=>'publish',
-                'posts_per_page'=>self::BATCH_LIMIT,
-                'orderby'=>'meta_value_num',
-                'meta_key'=>self::META_NEXTTRY,
-                'order'=>'ASC',
-                'no_found_rows'=>true,
-                'update_post_meta_cache'=>false,
-                'update_post_term_cache'=>false,
-                'ignore_sticky_posts'=>true,
-                'meta_query'=>[
-                    ['key'=>self::META_STATUS,'value'=>'queued'],
+            $query_args = [
+                'post_type' => self::supported_post_types(),
+                'post_status' => 'publish',
+                'posts_per_page' => $take,
+                'orderby' => 'meta_value_num',
+                'meta_key' => self::META_NEXTTRY,
+                'order' => 'ASC',
+                'no_found_rows' => true,
+                'update_post_meta_cache' => false,
+                'update_post_term_cache' => false,
+                'ignore_sticky_posts' => true,
+                'meta_query' => [
+                    ['key' => self::META_STATUS, 'value' => 'queued'],
                     [
-                        'relation'=>'OR',
-                        ['key'=>self::META_NEXTTRY,'compare'=>'NOT EXISTS'],
-                        ['key'=>self::META_NEXTTRY,'value'=>$now,'type'=>'NUMERIC','compare'=>'<='],
+                        'relation' => 'OR',
+                        ['key' => self::META_NEXTTRY, 'compare' => 'NOT EXISTS'],
+                        ['key' => self::META_NEXTTRY, 'value' => $now, 'type' => 'NUMERIC', 'compare' => '<='],
                     ],
-                    ['key'=>self::META_QUEUEDAT,'value'=>$cutoff,'type'=>'NUMERIC','compare'=>'>='],
-                    ['key'=>self::META_QSTAMP,'value'=>$install_stamp],
+                    ['key' => self::META_QUEUEDAT, 'value' => $cutoff, 'type' => 'NUMERIC', 'compare' => '>='],
+                    ['key' => self::META_QSTAMP, 'value' => $install_stamp],
                 ],
-            ]);
+            ];
+            $only = apply_filters('krv_max_autopost_process_queue_ids', null);
+            if (is_array($only)) {
+                $only_ids = array_values(array_filter(array_map('intval', $only)));
+                if ($only_ids === []) {
+                    return;
+                }
+                $query_args['post__in'] = $only_ids;
+            }
+
+            $q = new WP_Query($query_args);
+            $processed = 0;
 
             foreach ($q->posts as $p) {
-                $post_id = (int)$p->ID;
-                $qstatus = (string)get_post_meta($post_id, self::META_STATUS, true);
+                if ($processed >= $take) {
+                    break;
+                }
+                if ((microtime(true) - $started) >= self::RUN_BUDGET_SEC) {
+                    break;
+                }
+                if ($processed > 0 && $interval > 0) {
+                    $remain = self::RUN_BUDGET_SEC - (microtime(true) - $started);
+                    if ($remain < $interval) {
+                        break;
+                    }
+                    sleep($interval);
+                }
+
+                self::renew_named_lock(self::CRON_LOCK_KEY, self::CRON_LOCK_TTL);
+
+                $post_id_row = (int) (is_object($p) ? $p->ID : $p);
+                $qstatus = (string) get_post_meta($post_id_row, self::META_STATUS, true);
                 if ($qstatus !== 'queued') {
                     if (!empty(self::get_settings()['debug'])) {
-                        self::log('skip_not_queued', 0, $post_id, 'status='.$qstatus);
+                        self::log('skip_not_queued', 0, $post_id_row, 'status=' . $qstatus);
                     }
                     continue;
                 }
-                $res = self::send($post_id);
-                update_post_meta($post_id, self::META_TARGET_RESULTS, $res['results']);
 
-                if ($res['status'] === 'success') {
-                    update_post_meta($post_id,self::META_STATUS,'sent');
-                    delete_post_meta($post_id,self::META_ERROR);
-                    delete_post_meta($post_id,self::META_ATTEMPTS);
-                    delete_post_meta($post_id,self::META_NEXTTRY);
-                    delete_post_meta($post_id,self::META_QUEUEDAT);
-                    delete_post_meta($post_id,self::META_QSTAMP);
-                    continue;
-                }
-
-                if ($res['status'] === 'partial_success') {
-                    update_post_meta($post_id,self::META_STATUS,'partial_success');
-                    update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
-                    delete_post_meta($post_id,self::META_ATTEMPTS);
-                    delete_post_meta($post_id,self::META_NEXTTRY);
-                    delete_post_meta($post_id,self::META_QUEUEDAT);
-                    delete_post_meta($post_id,self::META_QSTAMP);
-                    continue;
-                }
-
-                $attempts = (int)get_post_meta($post_id,self::META_ATTEMPTS,true);
-                $attempts++;
-                update_post_meta($post_id,self::META_ATTEMPTS,$attempts);
-                update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
-
-                $delay = self::retry_delay($attempts);
-                if ($delay === null) {
-                    update_post_meta($post_id,self::META_STATUS,'error');
-                    update_post_meta($post_id,self::META_NEXTTRY,0);
-                } else {
-                    update_post_meta($post_id,self::META_STATUS,'queued');
-                    update_post_meta($post_id,self::META_NEXTTRY,$now + $delay);
+                $res = self::send_post_now($post_id_row);
+                $processed++;
+                $status = (string) ($res['status'] ?? '');
+                if ($status === 'rate_limited') {
+                    break;
                 }
             }
         } finally {
-            delete_transient(self::CRON_LOCK_KEY);
+            self::release_named_lock(self::CRON_LOCK_KEY);
             self::clear_queue_count_cache();
         }
     }
@@ -1510,9 +1762,10 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     public static function handle_run_queue(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
         check_admin_referer('krv_max_run_queue');
+        $n = self::batch_per_run();
         self::process_queue(true);
         self::clear_queue_count_cache();
-        self::notice('success','Очередь запущена вручную (1 элемент).');
+        self::notice('success', 'Очередь запущена вручную (до '.$n.' постов, пауза '.self::send_interval_sec().' с).');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
     }
@@ -1520,7 +1773,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     public static function handle_worker_enable(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
         check_admin_referer('krv_max_worker_enable');
-        update_option(self::WORKER_ENABLED_OPT, 1, false);
+        self::set_worker_enabled(true);
         self::notice('success','Автоворкер включен.');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
@@ -1529,7 +1782,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
     public static function handle_worker_disable(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
         check_admin_referer('krv_max_worker_disable');
-        update_option(self::WORKER_ENABLED_OPT, 0, false);
+        self::set_worker_enabled(false);
         self::notice('success','Автоворкер выключен.');
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
@@ -1580,32 +1833,25 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         if (!current_user_can('edit_post', $post_id)) wp_die('Forbidden');
         check_admin_referer('krv_max_send_now_'.$post_id);
 
-        $res = self::send($post_id);
-        update_post_meta($post_id, self::META_TARGET_RESULTS, $res['results']);
+        // Admin "send now" may resend after an edit. Identical content still hits the hash guard inside send().
+        $res = self::send($post_id, false);
+        $status = (string) ($res['status'] ?? 'error');
+        $reason = (string) ($res['reason'] ?? '');
 
-        if ($res['status'] === 'success') {
-            update_post_meta($post_id,self::META_STATUS,'sent');
-            delete_post_meta($post_id,self::META_ERROR);
-            delete_post_meta($post_id,self::META_ATTEMPTS);
-            delete_post_meta($post_id,self::META_NEXTTRY);
-            delete_post_meta($post_id,self::META_QUEUEDAT);
-            delete_post_meta($post_id,self::META_QSTAMP);
-            self::clear_queue_count_cache();
-            self::notice('success','Отправлено в MAX.');
-        } elseif ($res['status'] === 'partial_success') {
-            update_post_meta($post_id,self::META_STATUS,'partial_success');
-            update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
-            delete_post_meta($post_id,self::META_ATTEMPTS);
-            delete_post_meta($post_id,self::META_NEXTTRY);
-            delete_post_meta($post_id,self::META_QUEUEDAT);
-            delete_post_meta($post_id,self::META_QSTAMP);
-            self::clear_queue_count_cache();
-            self::notice('warning','Частично отправлено: '.self::short((string)$res['message']));
+        if ($status === 'skipped' && $reason === 'already_sent') {
+            self::notice('info', 'Уже отправлено ранее (dedupe). Повтор в MAX не ушёл.');
+        } elseif ($status === 'rate_limited') {
+            self::apply_send_outcome($post_id, $res);
+            self::notice('warning', 'MAX ответил 429. Пост оставлен в очереди: '.self::short((string) ($res['message'] ?? '')));
         } else {
-            update_post_meta($post_id,self::META_STATUS,'error');
-            update_post_meta($post_id,self::META_ERROR,(string)$res['message']);
-            self::clear_queue_count_cache();
-            self::notice('error','Ошибка: '.self::short((string)$res['message']));
+            self::apply_send_outcome($post_id, $res);
+            if ($status === 'success' || $status === 'sent') {
+                self::notice('success', 'Отправлено в MAX.');
+            } elseif ($status === 'partial_success') {
+                self::notice('warning', 'Частично отправлено: '.self::short((string) ($res['message'] ?? '')));
+            } else {
+                self::notice('error', 'Ошибка: '.self::short((string) ($res['message'] ?? '')));
+            }
         }
 
         wp_safe_redirect(wp_get_referer() ?: admin_url('edit.php'));
@@ -1641,19 +1887,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         if (!current_user_can('manage_options')) wp_die('Forbidden');
         check_admin_referer('krv_max_queue_all_published');
 
-        $posts = get_posts([
-            'post_type'=>self::supported_post_types(),
-            'post_status'=>'publish',
-            'numberposts'=>self::REQUEUE_BATCH,
-            'fields'=>'ids',
-            'orderby'=>'ID',
-            'order'=>'DESC',
-            'meta_query' => [
-                'relation' => 'OR',
-                ['key' => self::META_STATUS, 'compare' => 'NOT EXISTS'],
-                ['key' => self::META_STATUS, 'value' => 'queued', 'compare' => '!='],
-            ],
-        ]);
+        $posts = self::queue_all_published_ids();
 
         foreach ($posts as $id) {
             self::queue_post((int)$id,'Bulk queue published batch');
@@ -1668,7 +1902,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         self::notice(
             'success',
             'В очередь добавлено: '.$n.' (пачка до '.self::REQUEUE_BATCH.'). Целей: '.$targets_n.
-            '. Ориентир до '.($n * max(1, $targets_n)).' сообщений. Повторите кнопку для следующей пачки.'
+            '. Ориентир до '.($n * $targets_n).' сообщений. Повторите кнопку для следующей пачки.'
         );
         wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue'));
         exit;
@@ -1676,41 +1910,38 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     public static function handle_requeue_published_current_settings(): void {
         if (!current_user_can('manage_options')) wp_die('Forbidden');
-        check_admin_referer('krv_max_requeue_published_current_settings');
 
-        $posts = get_posts([
-            'post_type'=>self::supported_post_types(),
-            'post_status'=>'publish',
-            'numberposts'=>self::REQUEUE_BATCH,
-            'fields'=>'ids',
-            'orderby'=>'ID',
-            'order'=>'DESC',
-        ]);
-
-        $requeued = 0;
-        $skipped_disabled = 0;
-
-        foreach ($posts as $id) {
-            $post_id = (int)$id;
-            if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) {
-                $skipped_disabled++;
-                continue;
-            }
-
-            self::requeue_post_with_current_settings($post_id,'Requeue published batch with current settings');
-            $requeued++;
+        $confirmed = !empty($_POST['krv_max_requeue_confirm']);
+        $nonce = isset($_REQUEST['_wpnonce']) ? (string) $_REQUEST['_wpnonce'] : '';
+        $nonce_ok = $nonce !== '' && (
+            wp_verify_nonce($nonce, 'krv_max_requeue_published_execute')
+            || wp_verify_nonce($nonce, 'krv_max_requeue_published_current_settings')
+        );
+        if (!$nonce_ok) {
+            wp_die('Bad nonce');
         }
 
-        if ($requeued > 0) {
-            self::trigger_queue_worker();
+        // Checkbox + a dedicated execute nonce. JS confirm is not enough, and the preview nonce cannot execute.
+        if (!$confirmed || !wp_verify_nonce($nonce, 'krv_max_requeue_published_execute')) {
+            self::notice('warning', 'Переочередь не выполнена: нет подтверждения «Да, переотправить». Ничего не изменено.');
+            wp_safe_redirect(admin_url('admin.php?page=krv-max-autopost&tab=queue&requeue_preview=1'));
+            exit;
         }
-        self::clear_queue_count_cache();
 
+        $include_sent = !empty($_POST['krv_max_requeue_include_sent']);
+        $result = self::requeue_published_execute($include_sent);
         $targets_n = count(self::target_chat_ids(self::get_settings()));
+        $requeued = (int) $result['requeued'];
         $message = 'Переочередь (пачка): '.$requeued.' постов, целей: '.$targets_n.
-            ', ориентир до '.($requeued * max(1, $targets_n)).' сообщений. Повторите для следующей пачки.';
-        if ($skipped_disabled > 0) {
-            $message .= ' Пропущено «Не отправлять»: '.$skipped_disabled.'.';
+            ', ориентир до '.($requeued * $targets_n).' сообщений. Повторите просмотр для следующей пачки.';
+        if (!$include_sent) {
+            $message .= ' Уже отправленные (sent / partial_success) не трогались.';
+        }
+        if ((int) $result['skipped_disabled'] > 0) {
+            $message .= ' Пропущено «Не отправлять»: '.(int) $result['skipped_disabled'].'.';
+        }
+        if ((int) $result['skipped_sent'] > 0) {
+            $message .= ' Пропущено уже отправленных: '.(int) $result['skipped_sent'].'.';
         }
 
         self::notice('success', $message);
@@ -1767,19 +1998,19 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
 
     /* ================= CORE: send / upload / api ================= */
 
-    private static function send(int $post_id): array {
+    private static function send(int $post_id, bool $force = false): array {
         $s = self::get_settings();
         $token = self::token($s);
         $targets = self::target_chat_ids($s);
 
-        if ($token === '' || empty($targets)) return ['status'=>'error', 'message'=>'Не задан token/chat_id', 'results'=>[]];
+        if ($token === '' || empty($targets)) return ['status'=>'error', 'reason'=>'not_configured', 'message'=>'Не задан token/chat_id', 'results'=>[]];
 
         $post = get_post($post_id);
-        if (!$post) return ['status'=>'error', 'message'=>'Пост не найден', 'results'=>[]];
-        if (!self::is_supported_post_type($post->post_type)) return ['status'=>'error', 'message'=>'Тип записи не поддерживается', 'results'=>[]];
-        if ($post->post_status !== 'publish') return ['status'=>'error', 'message'=>'Можно отправлять только опубликованные материалы', 'results'=>[]];
+        if (!$post) return ['status'=>'error', 'reason'=>'not_found', 'message'=>'Пост не найден', 'results'=>[]];
+        if (!self::is_supported_post_type($post->post_type)) return ['status'=>'error', 'reason'=>'unsupported_type', 'message'=>'Тип записи не поддерживается', 'results'=>[]];
+        if ($post->post_status !== 'publish') return ['status'=>'error', 'reason'=>'not_published', 'message'=>'Можно отправлять только опубликованные материалы', 'results'=>[]];
 
-        if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return ['status'=>'error', 'message'=>'Отключено в метабоксе.', 'results'=>[]];
+        if ((int)get_post_meta($post_id,self::META_DISABLE,true) === 1) return ['status'=>'error', 'reason'=>'disabled', 'message'=>'Отключено в метабоксе.', 'results'=>[]];
 
         $message = self::build_message_content($post_id, $s);
         $text = (string)$message['text'];
@@ -1813,13 +2044,18 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         ];
         $hash = hash('sha256', wp_json_encode($sig, JSON_UNESCAPED_UNICODE));
         $prev = (string)get_post_meta($post_id,self::META_SENTHASH,true);
-        if ($prev && hash_equals($prev,$hash)) {
+        if (!$force && $prev !== '' && hash_equals($prev,$hash)) {
             if (!empty($s['debug'])) {
                 self::log('dedupe_skip', 0, $post_id, 'already sent (hash match)');
             }
             $prev_results = get_post_meta($post_id, self::META_TARGET_RESULTS, true);
             $prev_results = is_array($prev_results) ? $prev_results : [];
-            return ['status'=>'success', 'message'=>'Уже отправлено ранее (dedupe).', 'results'=>$prev_results];
+            return [
+                'status' => 'skipped',
+                'reason' => 'already_sent',
+                'message' => 'Уже отправлено ранее (dedupe).',
+                'results' => $prev_results,
+            ];
         }
 
         if (!empty($s['debug'])) {
@@ -2249,12 +2485,50 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
                     }
                 }
             }
-            return ['ok'=>true, 'message'=>'success', 'message_id'=>$message_id, 'http'=>$code];
+            return ['ok'=>true, 'message'=>'success', 'message_id'=>$message_id, 'http'=>$code, 'rate_limited'=>false, 'retry_after'=>0];
         }
 
+        $retry_after = $code === 429 ? self::retry_after_seconds($r) : 0;
         $error = 'HTTP '.$code.': '.self::short($body);
         self::log('send', $code, $post_id, '[chat_id='.self::mask_chat_id_for_log($chat_id).'] '.$error);
-        return ['ok'=>false, 'message'=>$error, 'message_id'=>'', 'http'=>$code];
+        return [
+            'ok' => false,
+            'message' => $error,
+            'message_id' => '',
+            'http' => $code,
+            'rate_limited' => $code === 429,
+            'retry_after' => $retry_after,
+        ];
+    }
+
+    /**
+     * Retry-After is either delta-seconds or an HTTP date.
+     *
+     * @param mixed $response
+     */
+    private static function retry_after_seconds($response): int {
+        if (!is_array($response)) {
+            return 0;
+        }
+        $raw = wp_remote_retrieve_header($response, 'retry-after');
+        if ($raw === '' || $raw === []) {
+            $raw = wp_remote_retrieve_header($response, 'Retry-After');
+        }
+        if (is_array($raw)) {
+            $raw = (string) end($raw);
+        }
+        $raw = trim((string) $raw);
+        if ($raw === '') {
+            return 0;
+        }
+        if (preg_match('/^\d+$/', $raw)) {
+            return max(0, min(86400, (int) $raw));
+        }
+        $ts = strtotime($raw);
+        if ($ts === false) {
+            return 0;
+        }
+        return max(0, min(86400, $ts - time()));
     }
 
     /**
@@ -2268,7 +2542,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $result = self::api($payload, $chat_id, $token, $post_id, $debug);
         $result['notify_channel_retry'] = false;
 
-        if (!empty($result['ok'])) {
+        if (!empty($result['ok']) || !empty($result['rate_limited'])) {
             return $result;
         }
 
@@ -2302,7 +2576,7 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         $primary['fallback_used'] = false;
         $primary['format'] = (string)($payload['format'] ?? '');
 
-        if (!empty($primary['ok'])) {
+        if (!empty($primary['ok']) || !empty($primary['rate_limited'])) {
             return $primary;
         }
 
@@ -2327,6 +2601,11 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             );
 
             $retry_att = self::api_with_notify_guard($plain_with_att, $chat_id, $token, $post_id, $debug);
+            if (!empty($retry_att['rate_limited'])) {
+                $retry_att['fallback_used'] = true;
+                $retry_att['format'] = '';
+                return $retry_att;
+            }
             if (!empty($retry_att['ok'])) {
                 $retry_att['fallback_used'] = true;
                 $retry_att['format'] = '';
@@ -2702,6 +2981,23 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
             }
 
             $send = self::send_to_target_with_fallback($payload, $chat_id, $token, $post_id, $debug, $format_mode, $plain_fallback);
+            if (!empty($send['rate_limited'])) {
+                $retry_after = (int) ($send['retry_after'] ?? 0);
+                $results[] = [
+                    'chat_id' => $chat_id,
+                    'status' => 'error',
+                    'message_id' => '',
+                    'error' => (string) ($send['message'] ?? 'HTTP 429'),
+                ];
+                $delay_label = $retry_after > 0 ? (string) $retry_after : 'backoff';
+                return [
+                    'status' => 'rate_limited',
+                    'reason' => 'rate_limited',
+                    'message' => 'HTTP 429: повтор через '.$delay_label.' с. Пачка остановлена.',
+                    'results' => $results,
+                    'retry_after' => $retry_after,
+                ];
+            }
             $row = [
                 'chat_id' => $chat_id,
                 'status' => !empty($send['ok']) ? 'success' : 'error',
@@ -3367,9 +3663,665 @@ sku|Артикул">'.esc_textarea((string)$s['custom_fields_map']).'</textarea>
         if (mb_strlen($s) > 320) $s = mb_substr($s, 0, 320) . '…';
         return $s;
     }
+
+    /* ================= 1.12.0 queue / send / CLI ================= */
+
+    private static function batch_per_run(): int {
+        $s = self::get_settings();
+        $n = (int) ($s['batch_per_run'] ?? self::BATCH_LIMIT);
+        return max(1, min(self::BATCH_PER_RUN_MAX, $n));
+    }
+
+    private static function send_interval_sec(): int {
+        $s = self::get_settings();
+        $n = (int) ($s['send_interval_sec'] ?? 3);
+        return max(0, min(60, $n));
+    }
+
+    public static function set_worker_enabled(bool $on): void {
+        update_option(self::WORKER_ENABLED_OPT, $on ? 1 : 0, false);
+        if ($on) {
+            self::ensure_cron_scheduled();
+        }
+        self::clear_queue_count_cache();
+    }
+
+    /**
+     * Send one published post now. Bypasses the worker switch.
+     *
+     * @param array{force?:bool,dry_run?:bool} $args
+     * @return array{status:string,reason:string,message:string,results:array,post_id:int,retry_after?:int}
+     */
+    public static function send_post_now(int $post_id, array $args = []): array {
+        $force = !empty($args['force']);
+        $dry_run = !empty($args['dry_run']);
+        $post_id = (int) $post_id;
+
+        $fail = static function (string $reason, string $message) use ($post_id): array {
+            return [
+                'status' => 'error',
+                'reason' => $reason,
+                'message' => $message,
+                'results' => [],
+                'post_id' => $post_id,
+            ];
+        };
+
+        if ($post_id <= 0) {
+            return $fail('not_found', 'Пост не найден');
+        }
+        $post = get_post($post_id);
+        if (!$post) {
+            return $fail('not_found', 'Пост не найден');
+        }
+        if ($post->post_status !== 'publish') {
+            return $fail('not_published', 'Можно отправлять только опубликованные материалы');
+        }
+        if (!self::is_supported_post_type($post->post_type)) {
+            return $fail('unsupported_type', 'Тип записи не поддерживается');
+        }
+        if ((int) get_post_meta($post_id, self::META_DISABLE, true) === 1) {
+            return $fail('disabled', 'Отключено в метабоксе.');
+        }
+
+        $current = (string) get_post_meta($post_id, self::META_STATUS, true);
+        if (!$force && in_array($current, ['sent', 'partial_success'], true)) {
+            $prev_results = get_post_meta($post_id, self::META_TARGET_RESULTS, true);
+            return [
+                'status' => 'skipped',
+                'reason' => 'already_sent',
+                'message' => 'Уже отправлено. Повтор без --force не уходит в MAX.',
+                'results' => is_array($prev_results) ? $prev_results : [],
+                'post_id' => $post_id,
+            ];
+        }
+
+        if ($dry_run) {
+            return [
+                'status' => 'dry_run',
+                'reason' => 'dry_run',
+                'message' => 'Ничего не отправлено и мета не изменена.',
+                'results' => [],
+                'post_id' => $post_id,
+            ];
+        }
+
+        $lock_key = 'krv_max_send_lock_' . $post_id;
+        if (!self::acquire_named_lock($lock_key, self::SEND_LOCK_TTL)) {
+            return [
+                'status' => 'skipped',
+                'reason' => 'locked',
+                'message' => 'Этот пост уже отправляется.',
+                'results' => [],
+                'post_id' => $post_id,
+            ];
+        }
+
+        try {
+            $res = self::send($post_id, $force);
+            $res['post_id'] = $post_id;
+            if (!isset($res['reason'])) {
+                $res['reason'] = (string) ($res['status'] ?? 'error');
+            }
+            self::apply_send_outcome($post_id, $res);
+            if (($res['status'] ?? '') === 'success') {
+                $res['status'] = 'sent';
+                $res['reason'] = 'sent';
+            }
+            return $res;
+        } finally {
+            self::release_named_lock($lock_key);
+        }
+    }
+
+    /**
+     * Persist the same queue meta process_queue() used to write inline.
+     * already_sent on an existing sent/partial_success post writes nothing.
+     *
+     * @param array{status?:string,reason?:string,message?:string,results?:array,retry_after?:int} $res
+     */
+    private static function apply_send_outcome(int $post_id, array $res): void {
+        $status = (string) ($res['status'] ?? 'error');
+        $reason = (string) ($res['reason'] ?? '');
+
+        if ($status === 'dry_run' || ($status === 'skipped' && $reason === 'locked')) {
+            return;
+        }
+
+        if ($status === 'skipped' && $reason === 'already_sent') {
+            $current = (string) get_post_meta($post_id, self::META_STATUS, true);
+            if ($current === 'sent' || $current === 'partial_success') {
+                return;
+            }
+            // Queued, but the content hash matches a delivery we already made.
+            update_post_meta($post_id, self::META_STATUS, 'sent');
+            delete_post_meta($post_id, self::META_ERROR);
+            delete_post_meta($post_id, self::META_ATTEMPTS);
+            delete_post_meta($post_id, self::META_NEXTTRY);
+            delete_post_meta($post_id, self::META_QUEUEDAT);
+            delete_post_meta($post_id, self::META_QSTAMP);
+            self::clear_queue_count_cache();
+            return;
+        }
+
+        if ($status === 'rate_limited') {
+            $delay = (int) ($res['retry_after'] ?? 0);
+            if ($delay <= 0) {
+                $attempts_now = (int) get_post_meta($post_id, self::META_ATTEMPTS, true);
+                $delay = self::retry_delay($attempts_now + 1) ?? (int) self::$backoff[0];
+            }
+            update_post_meta($post_id, self::META_STATUS, 'queued');
+            update_post_meta($post_id, self::META_NEXTTRY, time() + $delay);
+            update_post_meta($post_id, self::META_ERROR, (string) ($res['message'] ?? 'HTTP 429'));
+            if ((string) get_post_meta($post_id, self::META_QSTAMP, true) === '') {
+                update_post_meta($post_id, self::META_QSTAMP, self::current_install_stamp());
+            }
+            self::clear_queue_count_cache();
+            return;
+        }
+
+        if (isset($res['results']) && is_array($res['results'])) {
+            update_post_meta($post_id, self::META_TARGET_RESULTS, $res['results']);
+        }
+
+        if ($status === 'success' || $status === 'sent') {
+            update_post_meta($post_id, self::META_STATUS, 'sent');
+            delete_post_meta($post_id, self::META_ERROR);
+            delete_post_meta($post_id, self::META_ATTEMPTS);
+            delete_post_meta($post_id, self::META_NEXTTRY);
+            delete_post_meta($post_id, self::META_QUEUEDAT);
+            delete_post_meta($post_id, self::META_QSTAMP);
+            self::clear_queue_count_cache();
+            return;
+        }
+
+        if ($status === 'partial_success') {
+            update_post_meta($post_id, self::META_STATUS, 'partial_success');
+            update_post_meta($post_id, self::META_ERROR, (string) ($res['message'] ?? ''));
+            delete_post_meta($post_id, self::META_ATTEMPTS);
+            delete_post_meta($post_id, self::META_NEXTTRY);
+            delete_post_meta($post_id, self::META_QUEUEDAT);
+            delete_post_meta($post_id, self::META_QSTAMP);
+            self::clear_queue_count_cache();
+            return;
+        }
+
+        $attempts = (int) get_post_meta($post_id, self::META_ATTEMPTS, true);
+        $attempts++;
+        update_post_meta($post_id, self::META_ATTEMPTS, $attempts);
+        update_post_meta($post_id, self::META_ERROR, (string) ($res['message'] ?? 'Ошибка отправки'));
+        $delay = self::retry_delay($attempts);
+        if ($delay === null) {
+            update_post_meta($post_id, self::META_STATUS, 'error');
+            update_post_meta($post_id, self::META_NEXTTRY, 0);
+        } else {
+            update_post_meta($post_id, self::META_STATUS, 'queued');
+            update_post_meta($post_id, self::META_NEXTTRY, time() + $delay);
+            if ((string) get_post_meta($post_id, self::META_QSTAMP, true) === '') {
+                update_post_meta($post_id, self::META_QSTAMP, self::current_install_stamp());
+            }
+        }
+        self::clear_queue_count_cache();
+    }
+
+    /**
+     * Atomic lock. INSERT IGNORE because WP 6.6 add_option() updates on duplicate and is not a mutex.
+     * External object cache uses wp_cache_add in the transient group.
+     */
+    private static function acquire_named_lock(string $key, int $ttl): bool {
+        $ttl = max(1, $ttl);
+        if (function_exists('wp_using_ext_object_cache') && wp_using_ext_object_cache()) {
+            $existing = wp_cache_get($key, 'transient');
+            if ($existing !== false && $existing !== null) {
+                return false;
+            }
+            return (bool) wp_cache_add($key, 1, 'transient', $ttl);
+        }
+
+        global $wpdb;
+        $name = '_transient_' . $key;
+        $timeout_name = '_transient_timeout_' . $key;
+        $now = time();
+
+        $timeout = get_option($timeout_name, false);
+        $held = get_option($name, false);
+        if ($held !== false) {
+            $expires = $timeout === false ? 0 : (int) $timeout;
+            if ($expires > $now) {
+                return false;
+            }
+            delete_option($name);
+            delete_option($timeout_name);
+        }
+
+        $inserted = $wpdb->query($wpdb->prepare(
+            "INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)",
+            $name,
+            '1',
+            'off'
+        ));
+        if (!$inserted) {
+            return false;
+        }
+
+        $expires_at = (string) ($now + $ttl);
+        $wpdb->query($wpdb->prepare(
+            "INSERT INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)
+             ON DUPLICATE KEY UPDATE option_value = %s",
+            $timeout_name,
+            $expires_at,
+            'off',
+            $expires_at
+        ));
+        self::forget_option_cache($name);
+        self::forget_option_cache($timeout_name);
+        return true;
+    }
+
+    private static function renew_named_lock(string $key, int $ttl): void {
+        $ttl = max(1, $ttl);
+        if (function_exists('wp_using_ext_object_cache') && wp_using_ext_object_cache()) {
+            wp_cache_set($key, 1, 'transient', $ttl);
+            return;
+        }
+        update_option('_transient_timeout_' . $key, time() + $ttl, false);
+    }
+
+    private static function release_named_lock(string $key): void {
+        if (function_exists('wp_using_ext_object_cache') && wp_using_ext_object_cache()) {
+            wp_cache_delete($key, 'transient');
+        }
+        delete_transient($key);
+    }
+
+    private static function forget_option_cache(string $name): void {
+        wp_cache_delete($name, 'options');
+        $notoptions = wp_cache_get('notoptions', 'options');
+        if (is_array($notoptions) && isset($notoptions[$name])) {
+            unset($notoptions[$name]);
+            wp_cache_set('notoptions', $notoptions, 'options');
+        }
+    }
+
+    /**
+     * @return int[]
+     */
+    private static function queue_all_published_ids(): array {
+        $override = apply_filters('krv_max_autopost_queue_all_candidate_ids', null);
+        if (is_array($override)) {
+            $out = [];
+            foreach ($override as $id) {
+                $id = (int) $id;
+                if ($id <= 0) {
+                    continue;
+                }
+                $st = (string) get_post_meta($id, self::META_STATUS, true);
+                if (in_array($st, ['queued', 'sent', 'partial_success'], true)) {
+                    continue;
+                }
+                $out[] = $id;
+            }
+            return $out;
+        }
+
+        $posts = get_posts([
+            'post_type' => self::supported_post_types(),
+            'post_status' => 'publish',
+            'numberposts' => self::REQUEUE_BATCH,
+            'fields' => 'ids',
+            'orderby' => 'ID',
+            'order' => 'DESC',
+            'meta_query' => [
+                'relation' => 'OR',
+                ['key' => self::META_STATUS, 'compare' => 'NOT EXISTS'],
+                [
+                    'key' => self::META_STATUS,
+                    'value' => ['queued', 'sent', 'partial_success'],
+                    'compare' => 'NOT IN',
+                ],
+            ],
+        ]);
+        return array_values(array_map('intval', is_array($posts) ? $posts : []));
+    }
+
+    /**
+     * @return int[]
+     */
+    private static function requeue_candidate_ids(): array {
+        $override = apply_filters('krv_max_autopost_requeue_candidate_ids', null);
+        if (is_array($override)) {
+            return array_values(array_filter(array_map('intval', $override)));
+        }
+        $posts = get_posts([
+            'post_type' => self::supported_post_types(),
+            'post_status' => 'publish',
+            'numberposts' => self::REQUEUE_BATCH,
+            'fields' => 'ids',
+            'orderby' => 'ID',
+            'order' => 'DESC',
+        ]);
+        return array_values(array_map('intval', is_array($posts) ? $posts : []));
+    }
+
+    /**
+     * @return array{counts:array<string,int>,will_requeue:int,will_requeue_if_include_sent:int,targets:int,messages:int,messages_if_include_sent:int,batch:int}
+     */
+    private static function requeue_published_preview(): array {
+        $counts = [
+            'sent' => 0,
+            'partial_success' => 0,
+            'error' => 0,
+            'queued' => 0,
+            'none' => 0,
+            'other' => 0,
+            'disabled' => 0,
+        ];
+        $will = 0;
+        $will_all = 0;
+        foreach (self::requeue_candidate_ids() as $post_id) {
+            if ((int) get_post_meta($post_id, self::META_DISABLE, true) === 1) {
+                $counts['disabled']++;
+                continue;
+            }
+            $st = (string) get_post_meta($post_id, self::META_STATUS, true);
+            if ($st === '') {
+                $counts['none']++;
+            } elseif (isset($counts[$st])) {
+                $counts[$st]++;
+            } else {
+                $counts['other']++;
+            }
+            $will_all++;
+            if ($st !== 'sent' && $st !== 'partial_success') {
+                $will++;
+            }
+        }
+        $targets = count(self::target_chat_ids(self::get_settings()));
+        return [
+            'counts' => $counts,
+            'will_requeue' => $will,
+            'will_requeue_if_include_sent' => $will_all,
+            'targets' => $targets,
+            'messages' => $will * $targets,
+            'messages_if_include_sent' => $will_all * $targets,
+            'batch' => self::REQUEUE_BATCH,
+        ];
+    }
+
+    /**
+     * @return array{requeued:int,skipped_disabled:int,skipped_sent:int}
+     */
+    private static function requeue_published_execute(bool $include_sent): array {
+        $requeued = 0;
+        $skipped_disabled = 0;
+        $skipped_sent = 0;
+        foreach (self::requeue_candidate_ids() as $post_id) {
+            if ((int) get_post_meta($post_id, self::META_DISABLE, true) === 1) {
+                $skipped_disabled++;
+                continue;
+            }
+            $st = (string) get_post_meta($post_id, self::META_STATUS, true);
+            if (!$include_sent && ($st === 'sent' || $st === 'partial_success')) {
+                $skipped_sent++;
+                continue;
+            }
+            self::requeue_post_with_current_settings($post_id, 'Requeue published batch with current settings');
+            $requeued++;
+        }
+        if ($requeued > 0) {
+            self::trigger_queue_worker();
+        }
+        self::clear_queue_count_cache();
+        return [
+            'requeued' => $requeued,
+            'skipped_disabled' => $skipped_disabled,
+            'skipped_sent' => $skipped_sent,
+        ];
+    }
+
+    private static function render_requeue_preview(int $targets_n): void {
+        $preview = self::requeue_published_preview();
+        $c = $preview['counts'];
+        echo '<div style="max-width:980px;background:#fff;border:1px solid #dcdcde;border-left:4px solid #dba617;padding:14px;margin:0 0 16px;">';
+        echo '<h2 style="margin-top:0;">Переочередь published — просмотр, ничего ещё не изменено</h2>';
+        echo '<p>Пачка до '.esc_html((string) $preview['batch']).' последних опубликованных. Целей (chat ID): <strong>'.esc_html((string) $targets_n).'</strong>.</p>';
+        echo '<ul style="margin-top:0;">';
+        echo '<li>sent: '.esc_html((string) $c['sent']).'</li>';
+        echo '<li>partial_success: '.esc_html((string) $c['partial_success']).'</li>';
+        echo '<li>error: '.esc_html((string) $c['error']).'</li>';
+        echo '<li>queued: '.esc_html((string) $c['queued']).'</li>';
+        echo '<li>без статуса: '.esc_html((string) $c['none']).'</li>';
+        echo '<li>другие статусы: '.esc_html((string) $c['other']).'</li>';
+        echo '<li>пропуск «Не отправлять»: '.esc_html((string) $c['disabled']).'</li>';
+        echo '</ul>';
+        echo '<p>Без «включая уже отправленные»: <strong>'.esc_html((string) $preview['will_requeue']).'</strong> постов, ориентир <strong>'.esc_html((string) $preview['messages']).'</strong> сообщений в MAX.</p>';
+        echo '<p>Если включить уже отправленные: <strong>'.esc_html((string) $preview['will_requeue_if_include_sent']).'</strong> постов, ориентир <strong>'.esc_html((string) $preview['messages_if_include_sent']).'</strong> сообщений. Старый <code>_krv_max_sent_hash</code> сохранится в <code>_krv_max_sent_hash_prev</code>.</p>';
+        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+        wp_nonce_field('krv_max_requeue_published_execute');
+        echo '<input type="hidden" name="action" value="krv_max_requeue_published_current_settings">';
+        echo '<p><label><input type="checkbox" name="krv_max_requeue_include_sent" value="1"> включая уже отправленные (sent и partial_success)</label></p>';
+        echo '<p><label><input type="checkbox" name="krv_max_requeue_confirm" value="1"> Да, переотправить</label></p>';
+        submit_button('Выполнить переочередь', 'primary', 'submit', false);
+        echo '</form>';
+        echo '<p class="description">Без обеих отметок ничего не меняется. Чекбокса «Да, переотправить» и отдельного nonce достаточно: одного JS confirm нет.</p>';
+        echo '</div>';
+    }
+
+    /**
+     * @return array{queued:int,oldest:int}
+     */
+    private static function queue_stuck_snapshot(bool $cached = true): array {
+        if ($cached) {
+            $hit = get_transient('krv_max_queue_stuck');
+            if (is_array($hit) && isset($hit['queued'], $hit['oldest'])) {
+                return ['queued' => (int) $hit['queued'], 'oldest' => (int) $hit['oldest']];
+            }
+        }
+        $q = new WP_Query([
+            'post_type' => self::supported_post_types(),
+            'post_status' => 'any',
+            'posts_per_page' => 1,
+            'fields' => 'ids',
+            'no_found_rows' => false,
+            'ignore_sticky_posts' => true,
+            'update_post_meta_cache' => false,
+            'update_post_term_cache' => false,
+            'meta_key' => self::META_QUEUEDAT,
+            'orderby' => 'meta_value_num',
+            'order' => 'ASC',
+            'meta_query' => [
+                ['key' => self::META_STATUS, 'value' => 'queued'],
+            ],
+        ]);
+        $count = (int) $q->found_posts;
+        $oldest = 0;
+        if (!empty($q->posts)) {
+            $oldest = (int) get_post_meta((int) $q->posts[0], self::META_QUEUEDAT, true);
+        }
+        wp_reset_postdata();
+        $snap = ['queued' => $count, 'oldest' => $oldest];
+        set_transient('krv_max_queue_stuck', $snap, 60);
+        return $snap;
+    }
+
+    private static function format_wait(int $seconds): string {
+        $seconds = max(0, $seconds);
+        $hours = intdiv($seconds, 3600);
+        $mins = intdiv($seconds % 3600, 60);
+        return $hours . ' ч ' . $mins . ' мин';
+    }
+
+    /**
+     * @return string[] HTML chunks, not dismissible while the condition holds.
+     */
+    private static function stuck_queue_notices(): array {
+        $snap = self::queue_stuck_snapshot(true);
+        return self::render_stuck_notices(self::is_worker_enabled(), (int) $snap['queued'], (int) $snap['oldest']);
+    }
+
+    /**
+     * @return string[]
+     */
+    private static function render_stuck_notices(bool $worker_on, int $queued, int $oldest): array {
+        if ($queued <= 0) {
+            return [];
+        }
+        $age = $oldest > 0 ? max(0, time() - $oldest) : 0;
+        $when = $oldest > 0 ? wp_date('d.m H:i', $oldest) : '';
+        $wait = $oldest > 0 ? self::format_wait($age) : 'без даты';
+        $queue_url = admin_url('admin.php?page=krv-max-autopost&tab=queue');
+        $out = [];
+
+        if (!$worker_on) {
+            $enable = wp_nonce_url(
+                admin_url('admin-post.php?action=krv_max_worker_enable'),
+                'krv_max_worker_enable'
+            );
+            $html = '<div class="notice notice-warning"><p><strong>Автоворкер выключен:</strong> в очереди '
+                . esc_html((string) $queued) . ' постов, самый старый ждёт '
+                . esc_html($wait);
+            if ($when !== '') {
+                $html .= ' (с ' . esc_html($when) . ')';
+            }
+            $html .= '. <a class="button button-primary" href="' . esc_url($enable) . '">Включить автоворкер</a> ';
+            $html .= '<a href="' . esc_url($queue_url) . '">Открыть очередь</a></p></div>';
+            $out[] = $html;
+            return $out;
+        }
+
+        if ($oldest > 0 && $age > self::CRON_STALE_SEC) {
+            $html = '<div class="notice notice-warning"><p><strong>Очередь стоит:</strong> автоворкер включён, но самый старый пост ждёт '
+                . esc_html($wait) . ' (с ' . esc_html($when) . '), в очереди '
+                . esc_html((string) $queued) . '. Похоже, WP-Cron не запускается. ';
+            $html .= '<a href="' . esc_url($queue_url) . '">Открыть очередь</a></p></div>';
+            $out[] = $html;
+        }
+        return $out;
+    }
+
+    /**
+     * @return array<string,int|string>
+     */
+    public static function cli_status(): array {
+        $s = self::get_settings();
+        $oldest = self::oldest_queued_at_uncached();
+        $age = $oldest > 0 ? max(0, time() - $oldest) : 0;
+        $next = wp_next_scheduled(self::CRON_HOOK);
+        $token = self::token($s);
+        $chat = self::chat_id($s);
+        return [
+            'version' => self::VERSION,
+            'worker' => self::is_worker_enabled() ? 'on' : 'off',
+            'batch_per_run' => self::batch_per_run(),
+            'send_interval_sec' => self::send_interval_sec(),
+            'queued' => self::queue_status_count('queued'),
+            'error' => self::queue_status_count('error'),
+            'partial_success' => self::queue_status_count('partial_success'),
+            'sent' => self::queue_status_count('sent'),
+            'oldest_queued_at' => $oldest > 0 ? wp_date('Y-m-d H:i:s', $oldest) : '',
+            'oldest_queued_age_sec' => $age,
+            'oldest_queued_age' => $oldest > 0 ? self::format_wait($age) : '',
+            'next_cron' => $next ? wp_date('Y-m-d H:i:s', (int) $next) : '',
+            'next_cron_ts' => $next ? (int) $next : 0,
+            'disable_wp_cron' => (defined('DISABLE_WP_CRON') && DISABLE_WP_CRON) ? 'yes' : 'no',
+            'cutoff' => (int) get_option(self::CUTOFF_OPT, 0),
+            'stamp' => (string) get_option(self::INSTALL_STAMP_OPT, ''),
+            'targets' => count(self::target_chat_ids($s)),
+            'token' => self::mask_secret($token),
+            'chat_id' => self::mask_chat_id_for_log($chat),
+        ];
+    }
+
+    private static function oldest_queued_at_uncached(): int {
+        $q = new WP_Query([
+            'post_type' => self::supported_post_types(),
+            'post_status' => 'any',
+            'posts_per_page' => 1,
+            'fields' => 'ids',
+            'no_found_rows' => true,
+            'ignore_sticky_posts' => true,
+            'update_post_meta_cache' => false,
+            'update_post_term_cache' => false,
+            'meta_key' => self::META_QUEUEDAT,
+            'orderby' => 'meta_value_num',
+            'order' => 'ASC',
+            'meta_query' => [
+                ['key' => self::META_STATUS, 'value' => 'queued'],
+            ],
+        ]);
+        $oldest = 0;
+        if (!empty($q->posts)) {
+            $oldest = (int) get_post_meta((int) $q->posts[0], self::META_QUEUEDAT, true);
+        }
+        wp_reset_postdata();
+        return $oldest;
+    }
+
+    private static function mask_secret(string $value): string {
+        $value = trim($value);
+        $len = strlen($value);
+        if ($value === '') {
+            return '[empty]';
+        }
+        if ($len <= 4) {
+            return str_repeat('*', $len);
+        }
+        if ($len <= 8) {
+            return substr($value, 0, 1) . str_repeat('*', max(1, $len - 2)) . substr($value, -1);
+        }
+        return substr($value, 0, 2) . str_repeat('*', max(1, $len - 4)) . substr($value, -2);
+    }
+
+    /**
+     * @return array<int,array{ID:int,title:string,status:string,queued_at:string,next_try:string,attempts:int,error:string}>
+     */
+    public static function cli_queue_rows(string $status, int $limit): array {
+        $allowed = ['queued', 'error', 'partial_success', 'sent', 'all', ''];
+        if (!in_array($status, $allowed, true)) {
+            $status = 'queued';
+        }
+        $limit = max(1, min(500, $limit > 0 ? $limit : 50));
+        $args = [
+            'post_type' => self::supported_post_types(),
+            'post_status' => 'any',
+            'posts_per_page' => $limit,
+            'orderby' => 'ID',
+            'order' => 'DESC',
+            'no_found_rows' => true,
+            'ignore_sticky_posts' => true,
+        ];
+        if ($status !== '' && $status !== 'all') {
+            $args['meta_query'] = [
+                ['key' => self::META_STATUS, 'value' => $status],
+            ];
+        }
+        $q = new WP_Query($args);
+        $rows = [];
+        foreach ($q->posts as $p) {
+            $id = (int) (is_object($p) ? $p->ID : $p);
+            $queued_at = (int) get_post_meta($id, self::META_QUEUEDAT, true);
+            $next = (int) get_post_meta($id, self::META_NEXTTRY, true);
+            $rows[] = [
+                'ID' => $id,
+                'title' => (string) get_the_title($id),
+                'status' => (string) get_post_meta($id, self::META_STATUS, true),
+                'queued_at' => $queued_at ? wp_date('Y-m-d H:i:s', $queued_at) : '',
+                'next_try' => $next ? wp_date('Y-m-d H:i:s', $next) : '',
+                'attempts' => (int) get_post_meta($id, self::META_ATTEMPTS, true),
+                'error' => (string) get_post_meta($id, self::META_ERROR, true),
+            ];
+        }
+        wp_reset_postdata();
+        return $rows;
+    }
 }
 
 KRV_MAX_Autopost::init();
 
 register_activation_hook(__FILE__, ['KRV_MAX_Autopost', 'activate']);
 register_deactivation_hook(__FILE__, ['KRV_MAX_Autopost', 'deactivate']);
+
+if (defined('WP_CLI') && WP_CLI) {
+    require_once __DIR__ . '/includes/class-krv-max-cli.php';
+    KRV_MAX_CLI::register();
+}

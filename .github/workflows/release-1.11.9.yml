@@ -1,67 +1,20 @@
 name: release-1.11.9
 
+# Retired. The previous job patched sources and could push to main.
+# Publishing 1.12.0 is .github/workflows/release-1.12.0.yml and only after that code is on main.
+
 on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  retired:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Apply 1.11.9 PHP patch if still 1.11.8
+      - name: Refuse
         run: |
-          set -e
-          if grep -q "private const VERSION = '1.11.8'" max-autopost.php; then
-            echo "Applying patches/1.11.9-php.diff"
-            patch -p1 < patches/1.11.9-php.diff
-          else
-            echo "PHP already not 1.11.8"
-          fi
-          grep -n "private const VERSION" max-autopost.php | head -n 1
-          php -l max-autopost.php
-
-      - name: Commit patched sources
-        run: |
-          set -e
-          git config user.name "Aleksey Krivoshein"
-          git config user.email "a.krivoshein@gmail.com"
-          git add max-autopost.php
-          if git diff --cached --quiet; then
-            echo "No PHP commit needed"
-          else
-            git commit -m "Release 1.11.9: normalize image.payload to {token}/{url}"
-            git push origin HEAD:main
-          fi
-
-      - name: Pack plugin ZIP
-        run: |
-          set -e
-          mkdir -p /tmp/stage
-          rsync -a --exclude '.git' --exclude '.github' --exclude 'patches' ./ /tmp/stage/max-autopost/
-          (cd /tmp/stage && zip -r "$GITHUB_WORKSPACE/max-autopost-1.11.9.zip" max-autopost)
-          ls -l max-autopost-1.11.9.zip
-
-      - name: Create GitHub Release v1.11.9
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v1.11.9
-          name: MAX Autopost 1.11.9
-          target_commitish: main
-          files: max-autopost-1.11.9.zip
-          body: |
-            ## Исправления
-
-            - image.payload больше не сырой JSON step2 (`{"photos":{...}}`). API2 отвечал HTTP 400 proto.payload «Can't deserialize body», в MAX уходил только текст или отправка падала целиком.
-            - В POST /messages уходит только `{token}` из `photos.*.token` или `{url}`.
-            - Fallback: сначала повтор без format=html, но с картинкой и кнопками. Text-only — второй запасной путь, в том числе для plain+вложения.
-            - Жирный заголовок в MAX уходит как `<b>`, не `<strong>`.
-            - Плагин больше не вызывает удалённый GET /chats. Плашка в «Техпомощи» не выглядит как ошибка SSL.
-
-            ## Обновление
-
-            Плагин с включённым GitHub updater подхватит релиз автоматически.
-            Либо скачайте ZIP ниже и обновите вручную.
+          echo "Release 1.11.9 is retired. This workflow no longer patches files and no longer pushes to main."
+          echo "After 1.12.0 is on main, run the release-1.12.0 workflow."
+          exit 1
